@@ -1,6 +1,6 @@
-# Northstar Kanban
+# Project manager tool
 
-A kanban board built with Vite, React, TypeScript, and Yarn.
+A card board built with Vite, React, TypeScript, and Yarn.
 
 ## Features
 
