@@ -1,0 +1,65 @@
+:root {
+  --font-body: 'Barlow', 'Segoe UI', sans-serif;
+  --font-heading: 'Oxanium', 'Barlow', sans-serif;
+
+  --color-bg: #07090f;
+  --color-surface: #0d1120;
+  --color-surface-raised: #111827;
+  --color-border: rgba(56, 189, 248, 0.1);
+  --color-border-bright: rgba(56, 189, 248, 0.25);
+
+  --color-ink: #dde6f5;
+  --color-ink-soft: #7a90b0;
+  --color-muted: #4a5a72;
+
+  --color-accent: #38bdf8;
+  --color-accent-deep: #0ea5e9;
+  --color-accent-glow: rgba(56, 189, 248, 0.18);
+
+  --color-purple: #818cf8;
+  --color-cyan: #22d3ee;
+
+  font-family: var(--font-body);
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--color-ink);
+  background-color: var(--color-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--color-bg);
+  background-image:
+    linear-gradient(rgba(56, 189, 248, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+#root {
+  min-height: 100vh;
+}
