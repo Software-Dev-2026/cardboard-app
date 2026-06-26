@@ -10,7 +10,7 @@ __metadata:
   resolution: "2026-04-21-create-a-kanban-board-react-app@workspace:."
   dependencies:
     "@eslint/js": "npm:^9.39.4"
-    "@supabase/supabase-js": "npm:^2.104.0"
+    "@neondatabase/serverless": "npm:^1.1.0"
     "@types/node": "npm:^24.12.2"
     "@types/react": "npm:^19.2.14"
     "@types/react-dom": "npm:^19.2.3"
@@ -424,6 +424,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@neondatabase/serverless@npm:^1.1.0":
+  version: 1.1.0
+  resolution: "@neondatabase/serverless@npm:1.1.0"
+  checksum: 10c0/ba24391bd53f94b76a817c9bfd09f91259024119b51e64192f2f97f627253d4370699e051d73918352e71fb93ae4575177ca1f5b38f2c27fcf5dc1adda70c677
+  languageName: node
+  linkType: hard
+
 "@oxc-project/types@npm:=0.126.0":
   version: 0.126.0
   resolution: "@oxc-project/types@npm:0.126.0"
@@ -554,75 +561,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@supabase/auth-js@npm:2.104.0":
-  version: 2.104.0
-  resolution: "@supabase/auth-js@npm:2.104.0"
-  dependencies:
-    tslib: "npm:2.8.1"
-  checksum: 10c0/d5125217ebf4329d9c9736dc6ea2e948efff58fea2a47866f20b911ead2c5eb56324f78c03c6d5b521ba1689040bb9cba210dca5a5556eeffe122ead19ee9a83
-  languageName: node
-  linkType: hard
-
-"@supabase/functions-js@npm:2.104.0":
-  version: 2.104.0
-  resolution: "@supabase/functions-js@npm:2.104.0"
-  dependencies:
-    tslib: "npm:2.8.1"
-  checksum: 10c0/09027818963ef51cc24580a8807dd56e30da779be9693130eecb5289fead43333a30a56a8aed8772f561ff5103def311346e086ab6ef19e3f793e3df96789616
-  languageName: node
-  linkType: hard
-
-"@supabase/phoenix@npm:^0.4.0":
-  version: 0.4.0
-  resolution: "@supabase/phoenix@npm:0.4.0"
-  checksum: 10c0/67973ccace7c8ca2ecdc13dc14f9e80f8b957daa56e75642c6265302287e7124ced3aa9df740dd31e6905e51f0f60d271351117a9e946743ad30ec21210a9421
-  languageName: node
-  linkType: hard
-
-"@supabase/postgrest-js@npm:2.104.0":
-  version: 2.104.0
-  resolution: "@supabase/postgrest-js@npm:2.104.0"
-  dependencies:
-    tslib: "npm:2.8.1"
-  checksum: 10c0/5de6da23b3ec119b420215bc6430943bed894e1b9301cfb23c26fdbeb20ccbe6b7345387f360544024d7061da42e4cbe7960f7d7b0c1df1e6c3ae269ec01e91f
-  languageName: node
-  linkType: hard
-
-"@supabase/realtime-js@npm:2.104.0":
-  version: 2.104.0
-  resolution: "@supabase/realtime-js@npm:2.104.0"
-  dependencies:
-    "@supabase/phoenix": "npm:^0.4.0"
-    "@types/ws": "npm:^8.18.1"
-    tslib: "npm:2.8.1"
-    ws: "npm:^8.18.2"
-  checksum: 10c0/08d27e84a9224deb10aebe5b493ed455b78a43b77cbb7a65d7c00ef05c1860c3b0ab272d19c9a435005216c3d974ce146de0be22079490b59af900429677e3d9
-  languageName: node
-  linkType: hard
-
-"@supabase/storage-js@npm:2.104.0":
-  version: 2.104.0
-  resolution: "@supabase/storage-js@npm:2.104.0"
-  dependencies:
-    iceberg-js: "npm:^0.8.1"
-    tslib: "npm:2.8.1"
-  checksum: 10c0/ff5b32e2000b95128e29e36365f4fda85d2a848f212f82df67d17faf4eadb28385772583ed9a52c78d1ce3ea8410e2acd4bee6ccdea6067da0b014f1d704ac9f
-  languageName: node
-  linkType: hard
-
-"@supabase/supabase-js@npm:^2.104.0":
-  version: 2.104.0
-  resolution: "@supabase/supabase-js@npm:2.104.0"
-  dependencies:
-    "@supabase/auth-js": "npm:2.104.0"
-    "@supabase/functions-js": "npm:2.104.0"
-    "@supabase/postgrest-js": "npm:2.104.0"
-    "@supabase/realtime-js": "npm:2.104.0"
-    "@supabase/storage-js": "npm:2.104.0"
-  checksum: 10c0/17f2aa00cb8bd34ecb20c6f23a6c60ccad111c56e2fa69297b6761e013fcb5289d8985ec8a0657c0f2941fc05efae6e0f3d2d6dcd232a4df40610badcd7597c5
-  languageName: node
-  linkType: hard
-
 "@tybys/wasm-util@npm:^0.10.1":
   version: 0.10.1
   resolution: "@tybys/wasm-util@npm:0.10.1"
@@ -643,15 +581,6 @@ __metadata:
   version: 7.0.15
   resolution: "@types/json-schema@npm:7.0.15"
   checksum: 10c0/a996a745e6c5d60292f36731dd41341339d4eeed8180bb09226e5c8d23759067692b1d88e5d91d72ee83dfc00d3aca8e7bd43ea120516c17922cbcb7c3e252db
-  languageName: node
-  linkType: hard
-
-"@types/node@npm:*":
-  version: 25.6.0
-  resolution: "@types/node@npm:25.6.0"
-  dependencies:
-    undici-types: "npm:~7.19.0"
-  checksum: 10c0/d2d2015630ff098a201407f55f5077a20270ae4f465c739b40865cd9933b91b9c5d2b85568eadaf3db0801b91e267333ca7eb39f007428b173d1cdab4b339ac5
   languageName: node
   linkType: hard
 
@@ -679,15 +608,6 @@ __metadata:
   dependencies:
     csstype: "npm:^3.2.2"
   checksum: 10c0/7d25bf41b57719452d86d2ac0570b659210402707313a36ee612666bf11275a1c69824f8c3ee1fdca077ccfe15452f6da8f1224529b917050eb2d861e52b59b7
-  languageName: node
-  linkType: hard
-
-"@types/ws@npm:^8.18.1":
-  version: 8.18.1
-  resolution: "@types/ws@npm:8.18.1"
-  dependencies:
-    "@types/node": "npm:*"
-  checksum: 10c0/61aff1129143fcc4312f083bc9e9e168aa3026b7dd6e70796276dcfb2c8211c4292603f9c4864fae702f2ed86e4abd4d38aa421831c2fd7f856c931a481afbab
   languageName: node
   linkType: hard
 
@@ -1389,13 +1309,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"iceberg-js@npm:^0.8.1":
-  version: 0.8.1
-  resolution: "iceberg-js@npm:0.8.1"
-  checksum: 10c0/e504da64cc26e8ad7c5344353a7203c671a740c14eb6086f20505f5e9739cab774493e616032530c962df97f2a855115cc2e89a47dd81581df5917b21a69ec48
-  languageName: node
-  linkType: hard
-
 "ignore@npm:^5.2.0":
   version: 5.3.2
   resolution: "ignore@npm:5.3.2"
@@ -2053,7 +1966,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tslib@npm:2.8.1, tslib@npm:^2.4.0":
+"tslib@npm:^2.4.0":
   version: 2.8.1
   resolution: "tslib@npm:2.8.1"
   checksum: 10c0/9c4759110a19c53f992d9aae23aac5ced636e99887b51b9e61def52611732872ff7668757d4e4c61f19691e36f4da981cd9485e869b4a7408d689f6bf1f14e62
@@ -2108,13 +2021,6 @@ __metadata:
   version: 7.16.0
   resolution: "undici-types@npm:7.16.0"
   checksum: 10c0/3033e2f2b5c9f1504bdc5934646cb54e37ecaca0f9249c983f7b1fc2e87c6d18399ebb05dc7fd5419e02b2e915f734d872a65da2e3eeed1813951c427d33cc9a
-  languageName: node
-  linkType: hard
-
-"undici-types@npm:~7.19.0":
-  version: 7.19.2
-  resolution: "undici-types@npm:7.19.2"
-  checksum: 10c0/7159f10546f9f6c47d36776bb1bbf8671e87c1e587a6fee84ae1f111ae8de4f914efa8ca0dfcd224f4f4a9dfc3f6028f627ccb5ddaccf82d7fd54671b89fac3e
   languageName: node
   linkType: hard
 
@@ -2231,21 +2137,6 @@ __metadata:
   version: 1.2.5
   resolution: "word-wrap@npm:1.2.5"
   checksum: 10c0/e0e4a1ca27599c92a6ca4c32260e8a92e8a44f4ef6ef93f803f8ed823f486e0889fc0b93be4db59c8d51b3064951d25e43d434e95dc8c960cc3a63d65d00ba20
-  languageName: node
-  linkType: hard
-
-"ws@npm:^8.18.2":
-  version: 8.20.0
-  resolution: "ws@npm:8.20.0"
-  peerDependencies:
-    bufferutil: ^4.0.1
-    utf-8-validate: ">=5.0.2"
-  peerDependenciesMeta:
-    bufferutil:
-      optional: true
-    utf-8-validate:
-      optional: true
-  checksum: 10c0/956ac5f11738c914089b65878b9223692ace77337ba55379ae68e1ecbeae9b47a0c6eb9403688f609999a58c80d83d99865fe0029b229d308b08c1ef93d4ea14
   languageName: node
   linkType: hard
 

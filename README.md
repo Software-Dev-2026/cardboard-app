@@ -1,14 +1,14 @@
 # Project manager tool
 
-A card board built with Vite, React, TypeScript, and Yarn.
+A classroom project board built with Vite, React, TypeScript, Yarn, and Neon Postgres.
 
 ## Features
 
-- Drag cards between backlog, in progress, review, and done
-- Filter by assignee or free-text search
-- Create new cards from the quick-add form
-- Persist board state in local storage
-- Responsive layout for desktop and mobile
+- Student-friendly card sections for started, flowing, and done work
+- Team tabs, Q&A, and manager notes views
+- Neon-backed card persistence through a small Node API
+- Classroom-aware database tables for school years, classrooms, students, cards, questions, and answers
+- One active classroom by default, with year-to-year reset handled by creating a new classroom/school-year record
 
 ## Stack
 
@@ -16,19 +16,40 @@ A card board built with Vite, React, TypeScript, and Yarn.
 - React 19
 - TypeScript
 - Yarn 4
+- Node HTTP server
+- Neon Postgres
 
 ## Getting started
 
 ```bash
-yarn install
-yarn dev
+npx -y @yarnpkg/cli-dist@4.14.1 install
+npx -y neonctl env pull
+npm run dev
 ```
+
+The server reads `DATABASE_URL` from `.env`, creates the `cardboard_*` tables if needed, and serves both the API and the Vite app.
+
+## GitHub login
+
+Create a GitHub OAuth App and add these values to `.env`:
+
+```bash
+GITHUB_CLIENT_ID=...
+GITHUB_CLIENT_SECRET=...
+```
+
+For local development, set the GitHub OAuth callback URL to the URL printed by `npm run dev` plus `/auth/github/callback`.
+For example: `http://localhost:5174/auth/github/callback`.
 
 ## Scripts
 
 ```bash
-yarn dev
-yarn build
-yarn lint
-yarn preview
+npm run dev
+npm run build
+npm run lint
+npm run preview
 ```
+
+## Classroom rollover
+
+At the end of a school year, archive the existing classroom row and create a new `cardboard_school_years` + `cardboard_classrooms` pair. Cards are scoped by `classroom_id`, so old classes can be retained without mixing with the new roster.

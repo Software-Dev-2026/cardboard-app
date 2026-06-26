@@ -1,14 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 import './App.css'
-import { isSupabaseConfigured, supabase } from './utils/supabase'
+import { createCard, fetchCards, fetchManagerNotes, fetchMe, logout, saveManagerNotes, updateCard } from './utils/api'
+import type { AuthUser } from './utils/api'
+import type { CardStatus, ManagerId, TabId, Task, TeamId } from './types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-type TeamId = 'team1' | 'team2'
-type TabId = 'team1' | 'team2' | 'qna' | 'notes'
-type ManagerId = 'manager1' | 'manager2'
-type CardStatus = 'started' | 'flowing' | 'done'
 
 const PRESET_TAGS = ['Blocked', 'Need Help'] as const
 
@@ -18,24 +15,12 @@ const CARD_STATUSES: Array<{ id: CardStatus; label: string; shortLabel: string }
   { id: 'done',    label: 'Finishing Up / Done',    shortLabel: 'Done'          },
 ]
 
-interface Task {
-  id: number | string
-  title: string
-  description: string
-  assignee: string
-  dueDate: string
-  tags: string[]
-  team: TeamId
-  cardStatus: CardStatus
-}
-
 interface EditState {
   title: string
   description: string
   assignee: string
   dueDate: string
   presetTags: string[]
-  customTags: string
   team: TeamId
   cardStatus: CardStatus
 }
@@ -46,19 +31,7 @@ interface TaskDraft {
   assignee: string
   dueDate: string
   presetTags: string[]
-  customTags: string
   team: TeamId
-}
-
-interface RemoteTaskRow {
-  id: number | string
-  name: string | null
-  description: string | null
-  assignee: string | null
-  due_date: string | null
-  tags: string[] | null
-  status: string | null
-  order_index: number | null
 }
 
 interface QnaQuestion {
@@ -76,7 +49,6 @@ interface QnaAnswer {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const REMOTE_SELECT = 'id, name, description, assignee, due_date, tags, status, order_index'
 const TODAY = new Date()
 
 const DEMO_TASKS: Task[] = [
@@ -174,14 +146,17 @@ const INITIAL_DRAFT: TaskDraft = {
   assignee: '',
   dueDate: offsetDate(4),
   presetTags: [],
-  customTags: '',
   team: 'team1',
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-function buildTags(presetTags: string[], customTags: string): string[] {
-  return [...presetTags, ...customTags.split(',').map((t) => t.trim()).filter(Boolean)]
+function buildTags(presetTags: string[]): string[] {
+  return [...presetTags]
+}
+
+function visibleTags(tags: string[]): string[] {
+  return tags.filter((tag) => (PRESET_TAGS as readonly string[]).includes(tag))
 }
 
 function taskToEditState(task: Task): EditState {
@@ -192,22 +167,9 @@ function taskToEditState(task: Task): EditState {
     assignee: task.assignee,
     dueDate: task.dueDate,
     presetTags: task.tags.filter((t) => preset.includes(t)),
-    customTags: task.tags.filter((t) => !preset.includes(t)).join(', '),
     team: task.team,
     cardStatus: task.cardStatus,
   }
-}
-
-function encodeStatus(team: TeamId, cardStatus: CardStatus): string {
-  return `${team}:${cardStatus}`
-}
-
-function decodeStatus(value: string | null): { team: TeamId; cardStatus: CardStatus } {
-  const [rawTeam, rawStatus] = (value ?? '').split(':')
-  const team: TeamId = rawTeam === 'team2' ? 'team2' : 'team1'
-  const cardStatus: CardStatus =
-    rawStatus === 'flowing' || rawStatus === 'done' ? rawStatus : 'started'
-  return { team, cardStatus }
 }
 
 // ── TabItem ───────────────────────────────────────────────────────────────────
@@ -246,6 +208,35 @@ function TabItem({
       {label}
       {active && onRename && <span className="tab-edit-icon" onClick={startEdit} title="Rename">✎</span>}
     </button>
+  )
+}
+
+// ── AccountMenu ───────────────────────────────────────────────────────────────
+
+function AccountMenu({
+  user, githubConfigured, onLogout,
+}: {
+  user: AuthUser | null
+  githubConfigured: boolean
+  onLogout: () => void
+}) {
+  if (!githubConfigured) {
+    return <span className="auth-status">GitHub OAuth not configured</span>
+  }
+
+  if (!user) {
+    return <a className="github-login-btn" href="/auth/github/start">Sign in with GitHub</a>
+  }
+
+  return (
+    <div className="account-menu">
+      {user.avatarUrl && <img src={user.avatarUrl} alt="" className="account-avatar" />}
+      <div className="account-copy">
+        <span className="account-name">{user.displayName}</span>
+        <span className="account-handle">@{user.githubLogin}</span>
+      </div>
+      <button className="logout-btn" type="button" onClick={onLogout}>Log out</button>
+    </div>
   )
 }
 
@@ -307,6 +298,7 @@ function TaskCard({
   const [submitted, setSubmitted] = useState<string | null>(null)
 
   const dueState = getDueState(task.dueDate)
+  const shownTags = visibleTags(task.tags)
 
   function startEdit() { setEditState(taskToEditState(task)); setEditing(true) }
 
@@ -317,7 +309,7 @@ function TaskCard({
       description: editState.description.trim(),
       assignee: editState.assignee.trim() || 'Unassigned',
       dueDate: editState.dueDate,
-      tags: buildTags(editState.presetTags, editState.customTags),
+      tags: buildTags(editState.presetTags),
       team: editState.team,
       cardStatus: editState.cardStatus,
     })
@@ -364,11 +356,6 @@ function TaskCard({
             <TagToggleRow selected={editState.presetTags}
               onChange={(tags) => updateEdit('presetTags', tags)} />
           </div>
-          <label className="field">
-            <span>Tags</span>
-            <input type="text" placeholder="Design, UX, Backend..." value={editState.customTags}
-              onChange={(e) => updateEdit('customTags', e.target.value)} />
-          </label>
           <div className="field">
             <span>Section</span>
             <div className="section-radio-row">
@@ -416,9 +403,9 @@ function TaskCard({
       <h4 className="task-title">{task.title}</h4>
       {task.description && <p className="task-desc">{task.description}</p>}
 
-      {task.tags.length > 0 && (
+      {shownTags.length > 0 && (
         <div className="tag-row">
-          {task.tags.map((tag) => (
+          {shownTags.map((tag) => (
             <span key={tag}
               className={`tag-pill ${tag === 'Blocked' ? 'tag-blocked' : tag === 'Need Help' ? 'tag-need-help' : ''}`}>
               {tag}
@@ -576,15 +563,64 @@ function QnaComposer({ onPost }: { onPost: (q: QnaQuestion) => void }) {
 
 // ── ManagerNotes ──────────────────────────────────────────────────────────────
 
-function ManagerNotes({ tasks, teamNames }: { tasks: Record<TeamId, Task[]>; teamNames: Record<TeamId, string> }) {
+function ManagerNotes({
+  tasks, teamNames, user,
+}: {
+  tasks: Record<TeamId, Task[]>
+  teamNames: Record<TeamId, string>
+  user: AuthUser | null
+}) {
   const [activeManager, setActiveManager] = useState<ManagerId>('manager1')
   const [notes, setNotes] = useState<Record<ManagerId, Record<string, string>>>({ manager1: {}, manager2: {} })
+  const [scratchNotes, setScratchNotes] = useState<Record<ManagerId, string>>({ manager1: '', manager2: '' })
+  const [savedNotesLoaded, setSavedNotesLoaded] = useState(false)
+  const scratchRef = useRef<HTMLDivElement>(null)
 
   const activeTeam: TeamId = activeManager === 'manager1' ? 'team1' : 'team2'
   const activeTeamTasks = tasks[activeTeam]
 
   function setNote(taskId: string, text: string) {
     setNotes((cur) => ({ ...cur, [activeManager]: { ...cur[activeManager], [taskId]: text } }))
+  }
+
+  useEffect(() => {
+    let isActive = true
+
+    async function loadSavedNotes() {
+      if (!user) {
+        setSavedNotesLoaded(false)
+        return
+      }
+
+      try {
+        const saved = await fetchManagerNotes()
+        if (!isActive) return
+        setNotes(saved.notes)
+        setScratchNotes(saved.scratchNotes)
+        setSavedNotesLoaded(true)
+      } catch {
+        if (isActive) setSavedNotesLoaded(false)
+      }
+    }
+
+    void loadSavedNotes()
+    return () => { isActive = false }
+  }, [user])
+
+  useEffect(() => {
+    if (!user || !savedNotesLoaded) return
+
+    const timeout = window.setTimeout(() => {
+      void saveManagerNotes({ notes, scratchNotes })
+    }, 650)
+
+    return () => window.clearTimeout(timeout)
+  }, [notes, scratchNotes, savedNotesLoaded, user])
+
+  function formatScratch(command: 'bold' | 'italic' | 'underline') {
+    scratchRef.current?.focus()
+    document.execCommand(command)
+    setScratchNotes((cur) => ({ ...cur, [activeManager]: scratchRef.current?.innerHTML ?? '' }))
   }
 
   return (
@@ -610,6 +646,7 @@ function ManagerNotes({ tasks, teamNames }: { tasks: Record<TeamId, Task[]>; tea
           {activeTeamTasks.map((task) => {
             const dueState = getDueState(task.dueDate)
             const statusInfo = CARD_STATUSES.find((s) => s.id === task.cardStatus)
+            const shownTags = visibleTags(task.tags)
             return (
               <div key={task.id} className="note-card">
                 <div className="note-card-header">
@@ -618,7 +655,7 @@ function ManagerNotes({ tasks, teamNames }: { tasks: Record<TeamId, Task[]>; tea
                     <span className={`section-status-badge section-status-${task.cardStatus}`}>
                       {statusInfo?.shortLabel}
                     </span>
-                    {task.tags.map((tag) => (
+                    {shownTags.map((tag) => (
                       <span key={tag} className={`tag-pill ${tag === 'Blocked' ? 'tag-blocked' : tag === 'Need Help' ? 'tag-need-help' : ''}`}>{tag}</span>
                     ))}
                   </div>
@@ -636,6 +673,31 @@ function ManagerNotes({ tasks, teamNames }: { tasks: Record<TeamId, Task[]>; tea
           })}
         </div>
       )}
+      <section className="scratch-notes">
+        <div className="scratch-notes-header">
+          <div>
+            <h3>Scratchpad</h3>
+          </div>
+          <div className="format-toolbar" aria-label="Formatting controls">
+            <button type="button" title="Bold" onClick={() => formatScratch('bold')}><strong>B</strong></button>
+            <button type="button" title="Italic" onClick={() => formatScratch('italic')}><em>I</em></button>
+            <button type="button" title="Underline" onClick={() => formatScratch('underline')}><u>U</u></button>
+          </div>
+        </div>
+        <div
+          key={activeManager}
+          ref={scratchRef}
+          className="scratch-editor"
+          contentEditable
+          role="textbox"
+          aria-label={`${teamNames[activeTeam]} manager scratchpad`}
+          data-placeholder="Write general meeting notes, follow-ups, or reminders..."
+          dangerouslySetInnerHTML={{ __html: scratchNotes[activeManager] }}
+          onInput={(e) => {
+            setScratchNotes((cur) => ({ ...cur, [activeManager]: e.currentTarget.innerHTML }))
+          }}
+        />
+      </section>
     </div>
   )
 }
@@ -648,26 +710,42 @@ function App() {
   const [teamNames, setTeamNames] = useState<Record<TeamId, string>>({ team1: 'Team 1', team2: 'Team 2' })
   const [activeTab, setActiveTab] = useState<TabId>('team1')
   const [qnaItems, setQnaItems] = useState<QnaQuestion[]>(DEMO_QNA)
-  const [isLoading, setIsLoading] = useState(isSupabaseConfigured)
+  const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (activeTab === 'team1' || activeTab === 'team2') setDraft((cur) => ({ ...cur, team: activeTab }))
-  }, [activeTab])
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const [githubConfigured, setGithubConfigured] = useState(true)
 
   useEffect(() => {
     let isActive = true
-    if (!supabase) return () => { isActive = false }
-    const client = supabase
     async function load() {
-      setIsLoading(true); setError('')
-      const { data, error: err } = await client.from('todos').select(REMOTE_SELECT)
-      if (!isActive) return
-      if (err) { setError(err.message) } else { setTasks(mapRows(data ?? [])) }
-      setIsLoading(false)
+      try {
+        setIsLoading(true); setError('')
+        const cards = await fetchCards()
+        if (isActive) setTasks(cards)
+      } catch (err) {
+        if (isActive) setError(err instanceof Error ? err.message : 'Could not load cards.')
+      } finally {
+        if (isActive) setIsLoading(false)
+      }
     }
     void load()
+    return () => { isActive = false }
+  }, [])
+
+  useEffect(() => {
+    let isActive = true
+    async function loadAccount() {
+      try {
+        const data = await fetchMe()
+        if (!isActive) return
+        setAuthUser(data.user)
+        setGithubConfigured(data.githubConfigured)
+      } catch {
+        if (isActive) setGithubConfigured(false)
+      }
+    }
+    void loadAccount()
     return () => { isActive = false }
   }, [])
 
@@ -679,35 +757,36 @@ function App() {
     setDraft((cur) => ({ ...cur, [field]: value }))
   }
 
+  function selectTab(tab: TabId) {
+    setActiveTab(tab)
+    if (tab === 'team1' || tab === 'team2') {
+      setDraft((cur) => ({ ...cur, team: tab }))
+    }
+  }
+
   async function handleCreateTask(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     const title = draft.title.trim(); if (!title) return
-    const tags = buildTags(draft.presetTags, draft.customTags)
-
-    if (!supabase) {
-      setTasks((cur) => [...cur, {
-        id: `local-${Date.now()}`, title,
-        description: draft.description.trim(),
-        assignee: draft.assignee.trim() || 'Unassigned',
-        dueDate: draft.dueDate, tags,
-        team: draft.team, cardStatus: 'started',
-      }])
-      setDraft((cur) => ({ ...INITIAL_DRAFT, dueDate: offsetDate(4), team: cur.team }))
-      return
-    }
+    const tags = buildTags(draft.presetTags)
 
     setIsSaving(true); setError('')
-    const { error: err } = await supabase.from('todos').insert({
-      name: title, description: draft.description.trim(),
-      assignee: draft.assignee.trim() || 'Unassigned',
-      due_date: draft.dueDate || null, tags,
-      status: encodeStatus(draft.team, 'started'),
-      order_index: tasks.length,
-    })
-    if (err) { setError(err.message); setIsSaving(false); return }
-    const { data } = await supabase.from('todos').select(REMOTE_SELECT)
-    if (data) { setTasks(mapRows(data)); setDraft((cur) => ({ ...INITIAL_DRAFT, dueDate: offsetDate(4), team: cur.team })) }
-    setIsSaving(false)
+    try {
+      const card = await createCard({
+        title,
+        description: draft.description.trim(),
+        assignee: draft.assignee.trim() || 'Unassigned',
+        dueDate: draft.dueDate,
+        tags,
+        team: draft.team,
+        cardStatus: 'started',
+      })
+      setTasks((cur) => [...cur, card])
+      setDraft((cur) => ({ ...INITIAL_DRAFT, dueDate: offsetDate(4), team: cur.team }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create card.')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   async function handleUpdateTask(id: Task['id'], updated: Partial<Task>) {
@@ -715,15 +794,25 @@ function App() {
     if (!current) return
     const merged = { ...current, ...updated }
 
-    if (supabase) {
-      const { error: err } = await supabase.from('todos').update({
-        name: merged.title, description: merged.description,
-        assignee: merged.assignee, due_date: merged.dueDate || null,
-        tags: merged.tags, status: encodeStatus(merged.team, merged.cardStatus),
-      }).eq('id', id)
-      if (err) { setError(err.message); return }
+    try {
+      const card = await updateCard(id, {
+        title: merged.title,
+        description: merged.description,
+        assignee: merged.assignee,
+        dueDate: merged.dueDate,
+        tags: merged.tags,
+        team: merged.team,
+        cardStatus: merged.cardStatus,
+      })
+      setTasks((cur) => cur.map((t) => (t.id === id ? card : t)))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update card.')
     }
-    setTasks((cur) => cur.map((t) => (t.id === id ? merged : t)))
+  }
+
+  async function handleLogout() {
+    await logout()
+    setAuthUser(null)
   }
 
   return (
@@ -732,31 +821,34 @@ function App() {
       <div className="orb orb-two" aria-hidden="true" />
 
       <div className="page-wrapper">
-        <nav className="tab-bar">
-          {(['team1', 'team2'] as TeamId[]).map((tid) => (
-            <TabItem key={tid} label={teamNames[tid]} active={activeTab === tid}
-              onClick={() => setActiveTab(tid)}
-              onRename={(n) => setTeamNames((cur) => ({ ...cur, [tid]: n }))} />
-          ))}
-          <TabItem label="Q&A" active={activeTab === 'qna'} onClick={() => setActiveTab('qna')} />
-          <TabItem label="Manager Notes" active={activeTab === 'notes'} onClick={() => setActiveTab('notes')} />
-        </nav>
+        <div className="top-bar">
+          <nav className="tab-bar">
+            {(['team1', 'team2'] as TeamId[]).map((tid) => (
+              <TabItem key={tid} label={teamNames[tid]} active={activeTab === tid}
+                onClick={() => selectTab(tid)}
+                onRename={(n) => setTeamNames((cur) => ({ ...cur, [tid]: n }))} />
+            ))}
+            <TabItem label="Q&A" active={activeTab === 'qna'} onClick={() => selectTab('qna')} />
+            <TabItem label="Manager Notes" active={activeTab === 'notes'} onClick={() => selectTab('notes')} />
+          </nav>
+          <AccountMenu user={authUser} githubConfigured={githubConfigured} onLogout={() => void handleLogout()} />
+        </div>
 
         {activeTab === 'notes' ? (
           <div className="notes-wrapper">
-            <ManagerNotes tasks={{ team1: team1Tasks, team2: team2Tasks }} teamNames={teamNames} />
+            <ManagerNotes tasks={{ team1: team1Tasks, team2: team2Tasks }} teamNames={teamNames} user={authUser} />
           </div>
         ) : (
           <main className="app-layout">
             <aside className="composer-panel">
               {activeTab === 'qna' ? (
                 <>
-                  <div className="composer-heading"><p className="eyebrow">New question</p><h2>Ask away</h2></div>
+                  <div className="composer-heading"><h2>Ask away</h2></div>
                   <QnaComposer onPost={(q) => setQnaItems((cur) => [q, ...cur])} />
                 </>
               ) : (
                 <>
-                  <div className="composer-heading"><p className="eyebrow">New card</p><h2>Add card</h2></div>
+                  <div className="composer-heading"><h2>Add card</h2></div>
                   <form className="composer-form" onSubmit={(e) => void handleCreateTask(e)}>
                     <label className="field"><span>Title</span>
                       <input type="text" placeholder="Plan launch office hours" value={draft.title}
@@ -780,10 +872,6 @@ function App() {
                       <TagToggleRow selected={draft.presetTags}
                         onChange={(tags) => updateDraft('presetTags', tags)} />
                     </div>
-                    <label className="field"><span>Tags</span>
-                      <input type="text" placeholder="Design, UX, Backend..." value={draft.customTags}
-                        onChange={(e) => updateDraft('customTags', e.target.value)} />
-                    </label>
                     {error && <p className="form-error">{error}</p>}
                     <button className="primary-button" type="submit" disabled={isSaving}>
                       {isSaving ? 'Saving...' : `Add to ${teamNames[draft.team]}`}
@@ -826,25 +914,7 @@ function App() {
   )
 }
 
-// ── Data helpers ──────────────────────────────────────────────────────────────
-
-function mapRows(rows: RemoteTaskRow[]): Task[] {
-  return rows
-    .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
-    .map((row) => {
-      const { team, cardStatus } = decodeStatus(row.status)
-      return {
-        id: row.id,
-        title: row.name?.trim() || 'Untitled task',
-        description: row.description?.trim() || '',
-        assignee: row.assignee?.trim() || 'Unassigned',
-        dueDate: row.due_date || '',
-        tags: Array.isArray(row.tags) ? row.tags.filter(Boolean) : [],
-        team,
-        cardStatus,
-      }
-    })
-}
+// ── Date helpers ──────────────────────────────────────────────────────────────
 
 function offsetDate(days: number) {
   const d = new Date(TODAY)

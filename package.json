@@ -5,14 +5,14 @@
   "packageManager": "yarn@4.14.1",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "NODE_ENV=development node server.mjs",
     "build": "tsc -b && vite build",
-    "start": "vite preview --host 0.0.0.0 --port ${PORT:-4173}",
+    "start": "NODE_ENV=production node server.mjs",
     "lint": "eslint .",
-    "preview": "vite preview --host 0.0.0.0 --port ${PORT:-4173}"
+    "preview": "NODE_ENV=production node server.mjs"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.104.0",
+    "@neondatabase/serverless": "^1.1.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },
