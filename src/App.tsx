@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 import './App.css'
-import { createCard, fetchCards, fetchManagerNotes, fetchMe, logout, saveManagerNotes, updateCard, updateDefaultName } from './utils/api'
+import { createAnswer, createCard, createQuestion, fetchCards, fetchManagerNotes, fetchMe, fetchQuestions, logout, saveManagerNotes, updateCard, updateDefaultName } from './utils/api'
 import type { AuthUser } from './utils/api'
-import type { CardStatus, ManagerId, TabId, Task, TeamId } from './types'
+import type { CardStatus, ManagerId, QnaQuestion, TabId, Task, TeamId } from './types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -30,19 +30,6 @@ interface TaskDraft {
   dueDate: string
   presetTags: string[]
   team: TeamId
-}
-
-interface QnaQuestion {
-  id: string
-  question: string
-  author: string
-  answers: QnaAnswer[]
-}
-
-interface QnaAnswer {
-  id: string
-  text: string
-  author: string
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -491,7 +478,7 @@ function QnaCard({
   item, onAddAnswer, defaultName,
 }: {
   item: QnaQuestion
-  onAddAnswer: (id: string, ans: QnaAnswer) => void
+  onAddAnswer: (id: string, text: string) => Promise<void>
   defaultName: string
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -499,8 +486,7 @@ function QnaCard({
 
   function submitAnswer() {
     const text = answerText.trim(); if (!text) return
-    onAddAnswer(item.id, { id: `ans-${Date.now()}`, text, author: defaultName || 'Anonymous' })
-    setAnswerText('')
+    void onAddAnswer(item.id, text).then(() => setAnswerText(''))
   }
 
   return (
@@ -549,12 +535,11 @@ function QnaCard({
 
 // ── QnaComposer ───────────────────────────────────────────────────────────────
 
-function QnaComposer({ onPost, defaultName }: { onPost: (q: QnaQuestion) => void; defaultName: string }) {
+function QnaComposer({ onPost, defaultName }: { onPost: (question: string) => Promise<void>; defaultName: string }) {
   const [question, setQuestion] = useState('')
   function handleSubmit(e: FormEvent) {
     e.preventDefault(); const q = question.trim(); if (!q) return
-    onPost({ id: `qna-${Date.now()}`, question: q, author: defaultName || 'Anonymous', answers: [] })
-    setQuestion('')
+    void onPost(q).then(() => setQuestion(''))
   }
   return (
     <form className="composer-form" onSubmit={handleSubmit}>
@@ -729,8 +714,11 @@ function App() {
     async function load() {
       try {
         setIsLoading(true); setError('')
-        const cards = await fetchCards()
-        if (isActive) setTasks(cards)
+        const [cards, questions] = await Promise.all([fetchCards(), fetchQuestions()])
+        if (isActive) {
+          setTasks(cards)
+          setQnaItems(questions)
+        }
       } catch (err) {
         if (isActive) setError(err instanceof Error ? err.message : 'Could not load cards.')
       } finally {
@@ -819,6 +807,24 @@ function App() {
     }
   }
 
+  async function handleCreateQuestion(question: string) {
+    try {
+      const created = await createQuestion(question)
+      setQnaItems((cur) => [created, ...cur])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not post question.')
+    }
+  }
+
+  async function handleCreateAnswer(questionId: string, text: string) {
+    try {
+      const answer = await createAnswer(questionId, text)
+      setQnaItems((cur) => cur.map((q) => q.id === questionId ? { ...q, answers: [...q.answers, answer] } : q))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not post answer.')
+    }
+  }
+
   async function handleLogout() {
     await logout()
     setAuthUser(null)
@@ -863,7 +869,7 @@ function App() {
               {activeTab === 'qna' ? (
                 <>
                   <div className="composer-heading"><h2>Ask away</h2></div>
-                  <QnaComposer onPost={(q) => setQnaItems((cur) => [q, ...cur])} defaultName={defaultName} />
+                  <QnaComposer onPost={handleCreateQuestion} defaultName={defaultName} />
                 </>
               ) : (
                 <>
@@ -902,8 +908,7 @@ function App() {
                   : <div className="qna-list">{qnaItems.map((item) => (
                       <QnaCard key={item.id} item={item}
                         defaultName={defaultName}
-                        onAddAnswer={(qid, ans) =>
-                          setQnaItems((cur) => cur.map((q) => q.id === qid ? { ...q, answers: [...q.answers, ans] } : q))} />
+                        onAddAnswer={handleCreateAnswer} />
                     ))}</div>
               ) : isLoading ? (
                 <p className="loading-text">Loading cards...</p>

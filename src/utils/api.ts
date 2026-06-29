@@ -1,4 +1,4 @@
-import type { Task } from '../types'
+import type { QnaAnswer, QnaQuestion, Task } from '../types'
 
 type CardPayload = Omit<Task, 'id'> & { id: string }
 
@@ -16,6 +16,18 @@ interface CardsResponse {
 
 interface CardResponse {
   card: CardPayload
+}
+
+interface QuestionsResponse {
+  questions: QnaQuestion[]
+}
+
+interface QuestionResponse {
+  question: QnaQuestion
+}
+
+interface AnswerResponse {
+  answer: QnaAnswer
 }
 
 interface MeResponse {
@@ -56,6 +68,27 @@ export async function logout(): Promise<void> {
 export async function fetchCards(): Promise<CardPayload[]> {
   const data = await apiRequest<CardsResponse>('/api/cards')
   return data.cards
+}
+
+export async function fetchQuestions(): Promise<QnaQuestion[]> {
+  const data = await apiRequest<QuestionsResponse>('/api/questions')
+  return data.questions
+}
+
+export async function createQuestion(question: string): Promise<QnaQuestion> {
+  const data = await apiRequest<QuestionResponse>('/api/questions', {
+    method: 'POST',
+    body: JSON.stringify({ question }),
+  })
+  return data.question
+}
+
+export async function createAnswer(questionId: string, text: string): Promise<QnaAnswer> {
+  const data = await apiRequest<AnswerResponse>(`/api/questions/${questionId}/answers`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  })
+  return data.answer
 }
 
 export async function fetchManagerNotes(): Promise<ManagerNotesPayload> {

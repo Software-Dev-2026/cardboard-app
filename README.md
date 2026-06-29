@@ -41,6 +41,16 @@ GITHUB_CLIENT_SECRET=...
 For local development, set the GitHub OAuth callback URL to the URL printed by `npm run dev` plus `/auth/github/callback`.
 For example: `http://localhost:5174/auth/github/callback`.
 
+## Slack notifications
+
+Create a Slack incoming webhook and add the URL to `.env`:
+
+```bash
+SLACK_WEBHOOK_URL=...
+```
+
+The server sends Slack notifications when someone creates a new card or posts a new Q&A question.
+
 ## Scripts
 
 ```bash

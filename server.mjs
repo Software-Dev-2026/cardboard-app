@@ -117,11 +117,36 @@ async function handleApi(req, res, url) {
     return
   }
 
+  if (url.pathname === '/api/questions' && req.method === 'GET') {
+    const questions = await listQuestions()
+    sendJson(res, 200, { questions })
+    return
+  }
+
+  if (url.pathname === '/api/questions' && req.method === 'POST') {
+    const body = await readJson(req)
+    const user = await getCurrentUser(req)
+    const question = await createQuestion(body, user)
+    void notifyNewQuestion(question)
+    sendJson(res, 201, { question })
+    return
+  }
+
   if (url.pathname === '/api/cards' && req.method === 'POST') {
     const body = await readJson(req)
     const user = await getCurrentUser(req)
     const created = await createCard(body, user)
+    void notifyNewCard(cardRowToPayload(created))
     sendJson(res, 201, { card: cardRowToPayload(created) })
+    return
+  }
+
+  const answerMatch = url.pathname.match(/^\/api\/questions\/([0-9a-f-]{36})\/answers$/i)
+  if (answerMatch && req.method === 'POST') {
+    const body = await readJson(req)
+    const user = await getCurrentUser(req)
+    const answer = await createAnswer(answerMatch[1], body, user)
+    sendJson(res, 201, { answer })
     return
   }
 
@@ -355,6 +380,141 @@ async function createCard(body, user) {
   `
 
   return created
+}
+
+async function listQuestions() {
+  const questionRows = await sql`
+    select id, question, author, created_at
+    from cardboard_questions
+    where classroom_id = ${activeClassroom.id}
+    order by created_at desc
+  `
+  const answerRows = await sql`
+    select a.id, a.question_id, a.text, a.author, a.created_at
+    from cardboard_answers a
+    join cardboard_questions q on q.id = a.question_id
+    where q.classroom_id = ${activeClassroom.id}
+    order by a.created_at asc
+  `
+  const answersByQuestion = answerRows.reduce((acc, row) => {
+    const answers = acc[row.question_id] ?? []
+    return {
+      ...acc,
+      [row.question_id]: [
+        ...answers,
+        {
+          id: row.id,
+          text: row.text,
+          author: row.author,
+        },
+      ],
+    }
+  }, {})
+
+  return questionRows.map((row) => ({
+    id: row.id,
+    question: row.question,
+    author: row.author,
+    answers: answersByQuestion[row.id] ?? [],
+  }))
+}
+
+async function createQuestion(body, user) {
+  const question = normalizeText(body.question).slice(0, 2000)
+  if (!question) throw new HttpError(400, 'Question is required.')
+
+  const [created] = await sql`
+    insert into cardboard_questions (classroom_id, question, author)
+    values (${activeClassroom.id}, ${question}, ${user?.displayName || 'Anonymous'})
+    returning id, question, author
+  `
+
+  return {
+    id: created.id,
+    question: created.question,
+    author: created.author,
+    answers: [],
+  }
+}
+
+async function createAnswer(questionId, body, user) {
+  const text = normalizeText(body.text).slice(0, 2000)
+  if (!text) throw new HttpError(400, 'Answer is required.')
+
+  const [question] = await sql`
+    select id
+    from cardboard_questions
+    where id = ${questionId}
+      and classroom_id = ${activeClassroom.id}
+    limit 1
+  `
+  if (!question) throw new HttpError(404, 'Question not found.')
+
+  const [created] = await sql`
+    insert into cardboard_answers (question_id, text, author)
+    values (${questionId}, ${text}, ${user?.displayName || 'Anonymous'})
+    returning id, text, author
+  `
+
+  return {
+    id: created.id,
+    text: created.text,
+    author: created.author,
+  }
+}
+
+async function notifyNewCard(card) {
+  await sendSlackMessage({
+    text: `New card from ${card.assignee}: ${card.title}`,
+    blocks: [
+      sectionBlock(`*New card*\\n*${escapeSlack(card.title)}*`),
+      sectionBlock(`Owner: ${escapeSlack(card.assignee)}\\nTeam: ${escapeSlack(card.team)}\\nDue: ${escapeSlack(card.dueDate || 'No date')}`),
+      ...(card.description ? [sectionBlock(escapeSlack(card.description))] : []),
+    ],
+  })
+}
+
+async function notifyNewQuestion(question) {
+  await sendSlackMessage({
+    text: `New Q&A question from ${question.author}: ${question.question}`,
+    blocks: [
+      sectionBlock(`*New Q&A question*\\n*${escapeSlack(question.question)}*`),
+      sectionBlock(`Asked by: ${escapeSlack(question.author)}`),
+    ],
+  })
+}
+
+async function sendSlackMessage(payload) {
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL
+  if (!webhookUrl) return
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+
+    if (!response.ok) {
+      console.warn(`Slack notification failed: ${response.status} ${await response.text()}`)
+    }
+  } catch (error) {
+    console.warn('Slack notification failed:', error)
+  }
+}
+
+function sectionBlock(text) {
+  return {
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text,
+    },
+  }
+}
+
+function escapeSlack(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 async function updateCard(id, body) {

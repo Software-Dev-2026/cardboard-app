@@ -13,3 +13,16 @@ export interface Task {
   team: TeamId
   cardStatus: CardStatus
 }
+
+export interface QnaQuestion {
+  id: string
+  question: string
+  author: string
+  answers: QnaAnswer[]
+}
+
+export interface QnaAnswer {
+  id: string
+  text: string
+  author: string
+}
