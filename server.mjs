@@ -72,7 +72,11 @@ function isPortAvailable(portToTry) {
 
 async function handleApi(req, res, url) {
   if (url.pathname === '/api/health' && req.method === 'GET') {
-    sendJson(res, 200, { ok: true, classroomId: activeClassroom.id })
+    sendJson(res, 200, {
+      ok: true,
+      classroomId: activeClassroom.id,
+      slackConfigured: Boolean(process.env.SLACK_WEBHOOK_URL),
+    })
     return
   }
 
