@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 import './App.css'
-import { createCard, fetchCards, fetchManagerNotes, fetchMe, logout, saveManagerNotes, updateCard } from './utils/api'
+import { createCard, fetchCards, fetchManagerNotes, fetchMe, logout, saveManagerNotes, updateCard, updateDefaultName } from './utils/api'
 import type { AuthUser } from './utils/api'
 import type { CardStatus, ManagerId, TabId, Task, TeamId } from './types'
 
@@ -18,7 +18,6 @@ const CARD_STATUSES: Array<{ id: CardStatus; label: string; shortLabel: string }
 interface EditState {
   title: string
   description: string
-  assignee: string
   dueDate: string
   presetTags: string[]
   team: TeamId
@@ -28,7 +27,6 @@ interface EditState {
 interface TaskDraft {
   title: string
   description: string
-  assignee: string
   dueDate: string
   presetTags: string[]
   team: TeamId
@@ -114,36 +112,9 @@ const DEMO_TASKS: Task[] = [
   },
 ]
 
-const DEMO_QNA: QnaQuestion[] = [
-  {
-    id: 'qna-1',
-    question: 'What is the deadline for the Q3 launch?',
-    author: 'Jordan',
-    answers: [
-      { id: 'ans-1', text: 'Target is end of July — marketing needs assets by the 20th.', author: 'Avery' },
-    ],
-  },
-  {
-    id: 'qna-2',
-    question: 'Who owns the API rate limit investigation?',
-    author: 'Casey',
-    answers: [],
-  },
-  {
-    id: 'qna-3',
-    question: 'Is the new onboarding flow approved by design?',
-    author: 'Morgan',
-    answers: [
-      { id: 'ans-2', text: 'Yes, design signed off on the 3-step version last Tuesday.', author: 'Riley' },
-      { id: 'ans-3', text: 'Legal also reviewed and cleared it.', author: 'Jordan' },
-    ],
-  },
-]
-
 const INITIAL_DRAFT: TaskDraft = {
   title: '',
   description: '',
-  assignee: '',
   dueDate: offsetDate(4),
   presetTags: [],
   team: 'team1',
@@ -164,7 +135,6 @@ function taskToEditState(task: Task): EditState {
   return {
     title: task.title,
     description: task.description,
-    assignee: task.assignee,
     dueDate: task.dueDate,
     presetTags: task.tags.filter((t) => preset.includes(t)),
     team: task.team,
@@ -214,12 +184,17 @@ function TabItem({
 // ── AccountMenu ───────────────────────────────────────────────────────────────
 
 function AccountMenu({
-  user, githubConfigured, onLogout,
+  user, githubConfigured, onLogout, onUserUpdate,
 }: {
   user: AuthUser | null
   githubConfigured: boolean
   onLogout: () => void
+  onUserUpdate: (user: AuthUser) => void
 }) {
+  const [nameValue, setNameValue] = useState(user?.displayName ?? '')
+  const [isSavingName, setIsSavingName] = useState(false)
+  const [nameError, setNameError] = useState('')
+
   if (!githubConfigured) {
     return <span className="auth-status">GitHub OAuth not configured</span>
   }
@@ -228,13 +203,53 @@ function AccountMenu({
     return <a className="github-login-btn" href="/auth/github/start">Sign in with GitHub</a>
   }
 
+  async function saveDefaultName() {
+    const displayName = nameValue.trim()
+    if (!displayName) {
+      setNameError('Required')
+      return
+    }
+
+    setIsSavingName(true)
+    setNameError('')
+    try {
+      const updated = await updateDefaultName(displayName)
+      onUserUpdate(updated)
+    } catch (err) {
+      setNameError(err instanceof Error ? err.message : 'Could not save')
+    } finally {
+      setIsSavingName(false)
+    }
+  }
+
   return (
     <div className="account-menu">
       {user.avatarUrl && <img src={user.avatarUrl} alt="" className="account-avatar" />}
       <div className="account-copy">
-        <span className="account-name">{user.displayName}</span>
+        <label className="default-name-field">
+          <span>Default name</span>
+          <input
+            type="text"
+            value={nameValue}
+            onChange={(e) => setNameValue(e.target.value)}
+            onBlur={() => { if (nameValue.trim() !== user.displayName) void saveDefaultName() }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+              if (e.key === 'Escape') setNameValue(user.displayName)
+            }}
+          />
+        </label>
         <span className="account-handle">@{user.githubLogin}</span>
+        {nameError && <span className="account-error">{nameError}</span>}
       </div>
+      <button
+        className="save-name-btn"
+        type="button"
+        onClick={() => void saveDefaultName()}
+        disabled={isSavingName || !nameValue.trim() || nameValue.trim() === user.displayName}
+      >
+        {isSavingName ? 'Saving' : 'Save'}
+      </button>
       <button className="logout-btn" type="button" onClick={onLogout}>Log out</button>
     </div>
   )
@@ -307,7 +322,7 @@ function TaskCard({
     onUpdate(task.id, {
       title,
       description: editState.description.trim(),
-      assignee: editState.assignee.trim() || 'Unassigned',
+      assignee: task.assignee,
       dueDate: editState.dueDate,
       tags: buildTags(editState.presetTags),
       team: editState.team,
@@ -339,18 +354,11 @@ function TaskCard({
             <textarea value={editState.description} rows={3}
               onChange={(e) => updateEdit('description', e.target.value)} />
           </label>
-          <div className="form-row">
-            <label className="field">
-              <span>Assignee</span>
-              <input type="text" value={editState.assignee}
-                onChange={(e) => updateEdit('assignee', e.target.value)} />
-            </label>
-            <label className="field">
-              <span>Due date</span>
-              <input type="date" value={editState.dueDate}
-                onChange={(e) => updateEdit('dueDate', e.target.value)} />
-            </label>
-          </div>
+          <label className="field">
+            <span>Due date</span>
+            <input type="date" value={editState.dueDate}
+              onChange={(e) => updateEdit('dueDate', e.target.value)} />
+          </label>
           <div className="field">
             <span>Status tags</span>
             <TagToggleRow selected={editState.presetTags}
@@ -479,14 +487,19 @@ function SectionColumn({
 
 // ── QnaCard ───────────────────────────────────────────────────────────────────
 
-function QnaCard({ item, onAddAnswer }: { item: QnaQuestion; onAddAnswer: (id: string, ans: QnaAnswer) => void }) {
+function QnaCard({
+  item, onAddAnswer, defaultName,
+}: {
+  item: QnaQuestion
+  onAddAnswer: (id: string, ans: QnaAnswer) => void
+  defaultName: string
+}) {
   const [expanded, setExpanded] = useState(false)
   const [answerText, setAnswerText] = useState('')
-  const [authorName, setAuthorName] = useState('')
 
   function submitAnswer() {
     const text = answerText.trim(); if (!text) return
-    onAddAnswer(item.id, { id: `ans-${Date.now()}`, text, author: authorName.trim() || 'Anonymous' })
+    onAddAnswer(item.id, { id: `ans-${Date.now()}`, text, author: defaultName || 'Anonymous' })
     setAnswerText('')
   }
 
@@ -524,8 +537,7 @@ function QnaCard({ item, onAddAnswer }: { item: QnaQuestion; onAddAnswer: (id: s
             <textarea className="feedback-textarea" placeholder="Write an answer..." value={answerText} rows={2}
               onChange={(e) => setAnswerText(e.target.value)} />
             <div className="answer-form-footer">
-              <input className="answer-author-input" type="text" placeholder="Your name"
-                value={authorName} onChange={(e) => setAuthorName(e.target.value)} />
+              <span className="posting-as">Posting as {defaultName || 'Anonymous'}</span>
               <button className="action-btn-save" onClick={submitAnswer} disabled={!answerText.trim()}>Answer</button>
             </div>
           </div>
@@ -537,12 +549,11 @@ function QnaCard({ item, onAddAnswer }: { item: QnaQuestion; onAddAnswer: (id: s
 
 // ── QnaComposer ───────────────────────────────────────────────────────────────
 
-function QnaComposer({ onPost }: { onPost: (q: QnaQuestion) => void }) {
+function QnaComposer({ onPost, defaultName }: { onPost: (q: QnaQuestion) => void; defaultName: string }) {
   const [question, setQuestion] = useState('')
-  const [author, setAuthor] = useState('')
   function handleSubmit(e: FormEvent) {
     e.preventDefault(); const q = question.trim(); if (!q) return
-    onPost({ id: `qna-${Date.now()}`, question: q, author: author.trim() || 'Anonymous', answers: [] })
+    onPost({ id: `qna-${Date.now()}`, question: q, author: defaultName || 'Anonymous', answers: [] })
     setQuestion('')
   }
   return (
@@ -552,10 +563,7 @@ function QnaComposer({ onPost }: { onPost: (q: QnaQuestion) => void }) {
         <textarea placeholder="What do you need to know?" value={question} rows={4}
           onChange={(e) => setQuestion(e.target.value)} />
       </label>
-      <label className="field">
-        <span>Your name</span>
-        <input type="text" placeholder="Jordan" value={author} onChange={(e) => setAuthor(e.target.value)} />
-      </label>
+      <p className="posting-as">Posting as {defaultName || 'Anonymous'}</p>
       <button className="primary-button" type="submit" disabled={!question.trim()}>Post question</button>
     </form>
   )
@@ -709,7 +717,7 @@ function App() {
   const [draft, setDraft] = useState<TaskDraft>(INITIAL_DRAFT)
   const [teamNames, setTeamNames] = useState<Record<TeamId, string>>({ team1: 'Team 1', team2: 'Team 2' })
   const [activeTab, setActiveTab] = useState<TabId>('team1')
-  const [qnaItems, setQnaItems] = useState<QnaQuestion[]>(DEMO_QNA)
+  const [qnaItems, setQnaItems] = useState<QnaQuestion[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState('')
@@ -752,6 +760,7 @@ function App() {
   const team1Tasks = tasks.filter((t) => t.team === 'team1')
   const team2Tasks = tasks.filter((t) => t.team === 'team2')
   const activeTasks = activeTab === 'team1' ? team1Tasks : team2Tasks
+  const defaultName = authUser?.displayName ?? ''
 
   function updateDraft<K extends keyof TaskDraft>(field: K, value: TaskDraft[K]) {
     setDraft((cur) => ({ ...cur, [field]: value }))
@@ -774,7 +783,7 @@ function App() {
       const card = await createCard({
         title,
         description: draft.description.trim(),
-        assignee: draft.assignee.trim() || 'Unassigned',
+        assignee: defaultName || 'Unassigned',
         dueDate: draft.dueDate,
         tags,
         team: draft.team,
@@ -815,6 +824,10 @@ function App() {
     setAuthUser(null)
   }
 
+  function handleUserUpdate(user: AuthUser) {
+    setAuthUser(user)
+  }
+
   return (
     <div className="app-shell">
       <div className="orb orb-one" aria-hidden="true" />
@@ -831,7 +844,13 @@ function App() {
             <TabItem label="Q&A" active={activeTab === 'qna'} onClick={() => selectTab('qna')} />
             <TabItem label="Manager Notes" active={activeTab === 'notes'} onClick={() => selectTab('notes')} />
           </nav>
-          <AccountMenu user={authUser} githubConfigured={githubConfigured} onLogout={() => void handleLogout()} />
+          <AccountMenu
+            key={authUser?.id ?? 'signed-out'}
+            user={authUser}
+            githubConfigured={githubConfigured}
+            onLogout={() => void handleLogout()}
+            onUserUpdate={handleUserUpdate}
+          />
         </div>
 
         {activeTab === 'notes' ? (
@@ -844,7 +863,7 @@ function App() {
               {activeTab === 'qna' ? (
                 <>
                   <div className="composer-heading"><h2>Ask away</h2></div>
-                  <QnaComposer onPost={(q) => setQnaItems((cur) => [q, ...cur])} />
+                  <QnaComposer onPost={(q) => setQnaItems((cur) => [q, ...cur])} defaultName={defaultName} />
                 </>
               ) : (
                 <>
@@ -858,16 +877,11 @@ function App() {
                       <textarea placeholder="What needs to happen next?" value={draft.description} rows={3}
                         onChange={(e) => updateDraft('description', e.target.value)} />
                     </label>
-                    <div className="form-row">
-                      <label className="field"><span>Assignee</span>
-                        <input type="text" value={draft.assignee}
-                          onChange={(e) => updateDraft('assignee', e.target.value)} />
-                      </label>
-                      <label className="field"><span>Due date</span>
-                        <input type="date" value={draft.dueDate}
-                          onChange={(e) => updateDraft('dueDate', e.target.value)} />
-                      </label>
-                    </div>
+                    <label className="field"><span>Due date</span>
+                      <input type="date" value={draft.dueDate}
+                        onChange={(e) => updateDraft('dueDate', e.target.value)} />
+                    </label>
+                    <p className="posting-as">Card owner: {defaultName || 'Anonymous'}</p>
                     <div className="field"><span>Status tags</span>
                       <TagToggleRow selected={draft.presetTags}
                         onChange={(tags) => updateDraft('presetTags', tags)} />
@@ -887,6 +901,7 @@ function App() {
                   ? <p className="loading-text">No questions yet — post the first one.</p>
                   : <div className="qna-list">{qnaItems.map((item) => (
                       <QnaCard key={item.id} item={item}
+                        defaultName={defaultName}
                         onAddAnswer={(qid, ans) =>
                           setQnaItems((cur) => cur.map((q) => q.id === qid ? { ...q, answers: [...q.answers, ans] } : q))} />
                     ))}</div>

@@ -40,6 +40,15 @@ export async function fetchMe(): Promise<MeResponse> {
   return apiRequest<MeResponse>('/api/me')
 }
 
+export async function updateDefaultName(displayName: string): Promise<AuthUser> {
+  const data = await apiRequest<MeResponse>('/api/me', {
+    method: 'PUT',
+    body: JSON.stringify({ displayName }),
+  })
+  if (!data.user) throw new Error('Could not update default name.')
+  return data.user
+}
+
 export async function logout(): Promise<void> {
   await apiRequest<OkResponse>('/api/logout', { method: 'POST' })
 }

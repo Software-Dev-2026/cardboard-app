@@ -173,18 +173,39 @@
 
 .account-copy {
   display: grid;
-  gap: 1px;
+  gap: 3px;
   min-width: 0;
 }
 
-.account-name {
-  color: var(--color-ink);
-  font-size: 0.84rem;
+.default-name-field {
+  display: grid;
+  gap: 2px;
+}
+
+.default-name-field span {
+  color: var(--color-muted);
+  font-size: 0.62rem;
   font-weight: 700;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.default-name-field input {
+  width: 150px;
+  border: 1px solid rgba(56, 189, 248, 0.12);
+  border-radius: 7px;
+  background: rgba(7, 9, 15, 0.68);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 0.34rem 0.5rem;
+  outline: none;
+}
+
+.default-name-field input:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.1);
 }
 
 .account-handle {
@@ -196,6 +217,13 @@
   white-space: nowrap;
 }
 
+.account-error {
+  color: #fca5a5;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.save-name-btn,
 .logout-btn {
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 8px;
@@ -208,6 +236,17 @@
   cursor: pointer;
   transition: all 140ms ease;
   white-space: nowrap;
+}
+
+.save-name-btn:not(:disabled):hover {
+  border-color: rgba(56, 189, 248, 0.28);
+  background: rgba(56, 189, 248, 0.08);
+  color: var(--color-accent);
+}
+
+.save-name-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .logout-btn:hover {
@@ -1062,25 +1101,11 @@
   align-items: center;
 }
 
-.answer-author-input {
-  flex: 1;
-  border: 1px solid rgba(56, 189, 248, 0.12);
-  border-radius: 8px;
-  background: rgba(7, 9, 15, 0.7);
-  color: var(--color-ink);
-  font: inherit;
-  font-size: 0.84rem;
-  padding: 0.5rem 0.8rem;
-  outline: none;
-  transition: border-color 140ms ease;
-}
-
-.answer-author-input:focus {
-  border-color: var(--color-accent);
-}
-
-.answer-author-input::placeholder {
+.posting-as {
+  margin: 0;
   color: var(--color-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
 }
 
 /* ── Manager Notes ── */

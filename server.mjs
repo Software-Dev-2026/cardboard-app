@@ -82,6 +82,14 @@ async function handleApi(req, res, url) {
     return
   }
 
+  if (url.pathname === '/api/me' && req.method === 'PUT') {
+    const user = await requireCurrentUser(req)
+    const body = await readJson(req)
+    const updatedUser = await updateCurrentUser(user, body)
+    sendJson(res, 200, { user: updatedUser, githubConfigured: isGithubConfigured() })
+    return
+  }
+
   if (url.pathname === '/api/logout' && req.method === 'POST') {
     await logout(req, res)
     sendJson(res, 200, { ok: true })
@@ -336,7 +344,7 @@ async function createCard(body, user) {
       ${user?.id ?? null},
       ${title},
       ${normalizeText(body.description)},
-      ${normalizeText(body.assignee) || 'Unassigned'},
+      ${user?.displayName || normalizeText(body.assignee) || 'Unassigned'},
       ${normalizeDate(body.dueDate)},
       ${normalizeTags(body.tags)},
       ${normalizeTeam(body.team)},
@@ -566,6 +574,27 @@ async function getCurrentUser(req) {
     displayName: user.display_name,
     email: user.email,
     avatarUrl: user.avatar_url,
+  }
+}
+
+async function updateCurrentUser(user, body) {
+  const displayName = normalizeText(body.displayName).slice(0, 80)
+  if (!displayName) throw new HttpError(400, 'Default name is required.')
+
+  const [updated] = await sql`
+    update cardboard_users
+    set display_name = ${displayName},
+        updated_at = now()
+    where id = ${user.id}
+    returning id, github_login, display_name, email, avatar_url
+  `
+
+  return {
+    id: updated.id,
+    githubLogin: updated.github_login,
+    displayName: updated.display_name,
+    email: updated.email,
+    avatarUrl: updated.avatar_url,
   }
 }
 
