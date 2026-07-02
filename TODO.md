@@ -1,29 +1,36 @@
 # TODO
 
+## Live-testing session state (in progress)
+
+Working live against a scratch Neon branch `m1-test` (project `cardboard`, id `fragrant-cherry-61614697`, org `Dixie Technical College` / `org-winter-smoke-36326727`). Local `.env` is populated (gitignored, not committed) with that branch's `DATABASE_URL` and a real GitHub OAuth App (dual callback URLs: `http://localhost:5801/auth/github/callback` and `https://cardboard.twinstars.tech/auth/github/callback`). `ADMIN_GITHUB_LOGINS=LukasSampson`.
+
+Notes for resuming:
+- The `.neon` file previously pointed at a stale/inaccessible org+project — it's now fixed to point at the real `cardboard` project above.
+- Port `5174` is already in permanent use locally by an unrelated project (`select-hospice`). Run this app with `PORT=5801 npm run dev` instead, or another free port — do not kill the 5174 process, it's not ours.
+- To restart testing later: `npx neonctl auth` (if needed), then `PORT=5801 npm run dev`, sign in with GitHub at `http://localhost:5801`.
+
+Checklist progress so far (Milestone 1):
+- [x] Item 1 (Schema migration) — verified clean `ensureSchema()` startup and spot-checked all listed columns/tables directly via `psql` against the `m1-test` branch.
+- [x] Item 2, first two sub-items — `.env` has `ADMIN_GITHUB_LOGINS`, signed in as `LukasSampson`, confirmed Admin tab appears (`/api/me` returns `isAdmin: true`).
+- [ ] Item 2, remaining sub-items — promoting a PM per team and confirming a non-admin is blocked still need a second GitHub test account (deferred by user, do later).
+- [x] Item 3 (Auth flow) — verified via headless browser that logged-out state shows the full sign-in wall, only `/api/me` fires (no `/api/cards`), no console errors.
+- [ ] Item 4 (Card accountability) — next up, not started. Needs to be walked through in the user's real logged-in browser session (create card → check activity log → change status → reassign → comment → My Tasks toggle).
+- [ ] Items 5–8 — not started.
+
 ## Before merging Milestone 1 to `main`
 
-The code is complete and passes `lint`/`build`/`tsc`, but the following require your real GitHub OAuth credentials and Neon `DATABASE_URL` — neither is available in the environment this was built in, so none of this has been run live yet.
-
-**Recommended: do this against a scratch Neon branch first, not your production classroom database.**
-
-```bash
-npx neonctl branches create --name m1-test
-npx neonctl env pull --branch m1-test
-```
-
 ### 1. Schema migration
-- [ ] Run `npm run dev` and confirm `ensureSchema()` completes with no errors on startup
-- [ ] Spot-check in the Neon SQL editor: `cardboard_users` has `role`/`team` columns, `cardboard_card_notes`/`cardboard_scratch_notes` have a `team` column (not `manager_id`), `cardboard_cards` has `assignee_user_id`, and `cardboard_card_events`/`cardboard_card_comments` exist
-  - *(I already verified the DDL itself against a real local Postgres, including a simulated copy of your existing manager1/manager2 data — the rename preserved everything correctly. This step is just confirming it behaves the same against your actual Neon database.)*
+- [x] Run `npm run dev` and confirm `ensureSchema()` completes with no errors on startup
+- [x] Spot-check in the Neon SQL editor: `cardboard_users` has `role`/`team` columns, `cardboard_card_notes`/`cardboard_scratch_notes` have a `team` column (not `manager_id`), `cardboard_cards` has `assignee_user_id`, and `cardboard_card_events`/`cardboard_card_comments` exist
 
 ### 2. Admin setup
-- [ ] Add `ADMIN_GITHUB_LOGINS=your-login,instructor-login` to `.env`
-- [ ] Sign in with your GitHub account, confirm the **Admin** tab appears
+- [x] Add `ADMIN_GITHUB_LOGINS=your-login,instructor-login` to `.env`
+- [x] Sign in with your GitHub account, confirm the **Admin** tab appears
 - [ ] Promote one student per team to PM (role `pm` + `team1`/`team2`) from the Admin tab
 - [ ] Confirm a non-admin account cannot see the Admin tab or hit `PATCH /api/admin/users/:id` directly
 
 ### 3. Auth flow
-- [ ] Confirm the app shows a full sign-in wall when logged out (no board content, no `/api/cards` request in the network tab)
+- [x] Confirm the app shows a full sign-in wall when logged out (no board content, no `/api/cards` request in the network tab)
 - [ ] Confirm anonymous posting is gone everywhere (Q&A, cards, comments all require login)
 
 ### 4. Card accountability
