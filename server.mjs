@@ -100,36 +100,67 @@ async function handleApi(req, res, url) {
     return
   }
 
-  if (url.pathname === '/api/manager-notes' && req.method === 'GET') {
+  if (url.pathname === '/api/roster' && req.method === 'GET') {
+    await requireCurrentUser(req)
+    const users = await listRoster()
+    sendJson(res, 200, { users })
+    return
+  }
+
+  if (url.pathname === '/api/admin/users' && req.method === 'GET') {
+    await requireAdmin(req)
+    const users = await listRoster()
+    sendJson(res, 200, { users })
+    return
+  }
+
+  const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})$/i)
+  if (adminUserMatch && req.method === 'PATCH') {
+    await requireAdmin(req)
+    const body = await readJson(req)
+    const updated = await updateUserRoleTeam(adminUserMatch[1], body)
+    if (!updated) {
+      sendJson(res, 404, { error: 'User not found.' })
+      return
+    }
+    sendJson(res, 200, { user: updated })
+    return
+  }
+
+  if (url.pathname === '/api/pm-notes' && req.method === 'GET') {
     const user = await requireCurrentUser(req)
-    const notes = await listManagerNotes(user)
+    if (user.role !== 'pm' || !user.team) throw new HttpError(403, 'PM access required.')
+    const notes = await listPmNotes(user)
     sendJson(res, 200, notes)
     return
   }
 
-  if (url.pathname === '/api/manager-notes' && req.method === 'PUT') {
+  if (url.pathname === '/api/pm-notes' && req.method === 'PUT') {
     const user = await requireCurrentUser(req)
+    if (user.role !== 'pm' || !user.team) throw new HttpError(403, 'PM access required.')
     const body = await readJson(req)
-    const notes = await saveManagerNotes(user, body)
+    const notes = await savePmNotes(user, body)
     sendJson(res, 200, notes)
     return
   }
 
   if (url.pathname === '/api/cards' && req.method === 'GET') {
+    await requireCurrentUser(req)
     const rows = await listCards()
     sendJson(res, 200, { cards: rows.map(cardRowToPayload) })
     return
   }
 
   if (url.pathname === '/api/questions' && req.method === 'GET') {
+    await requireCurrentUser(req)
     const questions = await listQuestions()
     sendJson(res, 200, { questions })
     return
   }
 
   if (url.pathname === '/api/questions' && req.method === 'POST') {
+    const user = await requireCurrentUser(req)
     const body = await readJson(req)
-    const user = await getCurrentUser(req)
     const question = await createQuestion(body, user)
     void notifyNewQuestion(question)
     sendJson(res, 201, { question })
@@ -137,9 +168,10 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === '/api/cards' && req.method === 'POST') {
+    const user = await requireCurrentUser(req)
     const body = await readJson(req)
-    const user = await getCurrentUser(req)
     const created = await createCard(body, user)
+    await recordCardEvent(created.id, user.id, 'created', null, null, null)
     void notifyNewCard(cardRowToPayload(created))
     sendJson(res, 201, { card: cardRowToPayload(created) })
     return
@@ -147,17 +179,54 @@ async function handleApi(req, res, url) {
 
   const answerMatch = url.pathname.match(/^\/api\/questions\/([0-9a-f-]{36})\/answers$/i)
   if (answerMatch && req.method === 'POST') {
+    const user = await requireCurrentUser(req)
     const body = await readJson(req)
-    const user = await getCurrentUser(req)
     const answer = await createAnswer(answerMatch[1], body, user)
     sendJson(res, 201, { answer })
     return
   }
 
+  const cardEventsMatch = url.pathname.match(/^\/api\/cards\/([0-9a-f-]{36})\/events$/i)
+  if (cardEventsMatch && req.method === 'GET') {
+    await requireCurrentUser(req)
+    const events = await listCardEvents(cardEventsMatch[1])
+    sendJson(res, 200, { events })
+    return
+  }
+
+  const teamActivityMatch = url.pathname.match(/^\/api\/teams\/(team1|team2)\/activity$/)
+  if (teamActivityMatch && req.method === 'GET') {
+    const team = teamActivityMatch[1]
+    const user = await requireCurrentUser(req)
+    if (!user.isAdmin && !(user.role === 'pm' && user.team === team)) {
+      throw new HttpError(403, 'PM or admin access required for this team.')
+    }
+    const events = await listTeamActivity(team)
+    sendJson(res, 200, { events })
+    return
+  }
+
+  const cardCommentsMatch = url.pathname.match(/^\/api\/cards\/([0-9a-f-]{36})\/comments$/i)
+  if (cardCommentsMatch && req.method === 'GET') {
+    await requireCurrentUser(req)
+    const comments = await listCardComments(cardCommentsMatch[1])
+    sendJson(res, 200, { comments })
+    return
+  }
+
+  if (cardCommentsMatch && req.method === 'POST') {
+    const user = await requireCurrentUser(req)
+    const body = await readJson(req)
+    const comment = await createCardComment(cardCommentsMatch[1], body, user)
+    sendJson(res, 201, { comment })
+    return
+  }
+
   const cardMatch = url.pathname.match(/^\/api\/cards\/([0-9a-f-]{36})$/i)
   if (cardMatch && req.method === 'PATCH') {
+    const user = await requireCurrentUser(req)
     const body = await readJson(req)
-    const updated = await updateCard(cardMatch[1], body)
+    const updated = await updateCard(cardMatch[1], body, user)
     if (!updated) {
       sendJson(res, 404, { error: 'Card not found.' })
       return
@@ -256,6 +325,21 @@ async function ensureSchema() {
   `
 
   await sql`
+    alter table cardboard_users
+      add column if not exists role text not null default 'student' check (role in ('student', 'pm'))
+  `
+
+  await sql`
+    alter table cardboard_users
+      add column if not exists team text check (team in ('team1', 'team2'))
+  `
+
+  await sql`
+    create index if not exists cardboard_users_role_team_idx
+      on cardboard_users (role, team)
+  `
+
+  await sql`
     create table if not exists cardboard_cards (
       id uuid primary key default gen_random_uuid(),
       classroom_id uuid not null references cardboard_classrooms(id) on delete cascade,
@@ -280,14 +364,77 @@ async function ensureSchema() {
   `
 
   await sql`
+    alter table cardboard_cards
+      add column if not exists assignee_user_id uuid references cardboard_users(id) on delete set null
+  `
+
+  await sql`
+    create index if not exists cardboard_cards_assignee_idx
+      on cardboard_cards (assignee_user_id)
+  `
+
+  await sql`
+    alter table cardboard_cards
+      add column if not exists priority text not null default 'medium' check (priority in ('low', 'medium', 'high'))
+  `
+
+  await sql`
+    create table if not exists cardboard_card_events (
+      id uuid primary key default gen_random_uuid(),
+      card_id uuid not null references cardboard_cards(id) on delete cascade,
+      classroom_id uuid not null references cardboard_classrooms(id) on delete cascade,
+      actor_user_id uuid not null references cardboard_users(id) on delete set null,
+      event_type text not null check (event_type in ('created', 'status_changed', 'assignee_changed', 'priority_changed', 'edited')),
+      field text,
+      old_value text,
+      new_value text,
+      created_at timestamptz not null default now()
+    )
+  `
+
+  await sql`
+    create index if not exists cardboard_card_events_card_idx
+      on cardboard_card_events (card_id, created_at)
+  `
+
+  await sql`
+    alter table cardboard_card_events
+      drop constraint if exists cardboard_card_events_event_type_check
+  `
+
+  await sql`
+    alter table cardboard_card_events
+      add constraint cardboard_card_events_event_type_check
+      check (event_type in ('created', 'status_changed', 'assignee_changed', 'priority_changed', 'edited'))
+  `
+
+  await sql`
+    create table if not exists cardboard_card_comments (
+      id uuid primary key default gen_random_uuid(),
+      card_id uuid not null references cardboard_cards(id) on delete cascade,
+      classroom_id uuid not null references cardboard_classrooms(id) on delete cascade,
+      author_user_id uuid not null references cardboard_users(id) on delete set null,
+      parent_comment_id uuid references cardboard_card_comments(id) on delete cascade,
+      body text not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `
+
+  await sql`
+    create index if not exists cardboard_card_comments_card_idx
+      on cardboard_card_comments (card_id, created_at)
+  `
+
+  await sql`
     create table if not exists cardboard_card_notes (
       user_id uuid not null references cardboard_users(id) on delete cascade,
       classroom_id uuid not null references cardboard_classrooms(id) on delete cascade,
-      manager_id text not null check (manager_id in ('manager1', 'manager2')),
+      team text not null check (team in ('team1', 'team2')),
       card_id uuid not null references cardboard_cards(id) on delete cascade,
       note_text text not null default '',
       updated_at timestamptz not null default now(),
-      primary key (user_id, classroom_id, manager_id, card_id)
+      primary key (user_id, classroom_id, team, card_id)
     )
   `
 
@@ -295,11 +442,41 @@ async function ensureSchema() {
     create table if not exists cardboard_scratch_notes (
       user_id uuid not null references cardboard_users(id) on delete cascade,
       classroom_id uuid not null references cardboard_classrooms(id) on delete cascade,
-      manager_id text not null check (manager_id in ('manager1', 'manager2')),
+      team text not null check (team in ('team1', 'team2')),
       html text not null default '',
       updated_at timestamptz not null default now(),
-      primary key (user_id, classroom_id, manager_id)
+      primary key (user_id, classroom_id, team)
     )
+  `
+
+  await sql`
+    do $$
+    begin
+      if exists (
+        select 1 from information_schema.columns
+        where table_name = 'cardboard_card_notes' and column_name = 'manager_id'
+      ) then
+        alter table cardboard_card_notes rename column manager_id to team;
+        alter table cardboard_card_notes drop constraint if exists cardboard_card_notes_manager_id_check;
+        update cardboard_card_notes set team = case when team = 'manager1' then 'team1' else 'team2' end;
+        alter table cardboard_card_notes add constraint cardboard_card_notes_team_check check (team in ('team1', 'team2'));
+      end if;
+    end $$;
+  `
+
+  await sql`
+    do $$
+    begin
+      if exists (
+        select 1 from information_schema.columns
+        where table_name = 'cardboard_scratch_notes' and column_name = 'manager_id'
+      ) then
+        alter table cardboard_scratch_notes rename column manager_id to team;
+        alter table cardboard_scratch_notes drop constraint if exists cardboard_scratch_notes_manager_id_check;
+        update cardboard_scratch_notes set team = case when team = 'manager1' then 'team1' else 'team2' end;
+        alter table cardboard_scratch_notes add constraint cardboard_scratch_notes_team_check check (team in ('team1', 'team2'));
+      end if;
+    end $$;
   `
 
   await sql`
@@ -353,34 +530,48 @@ async function ensureSchema() {
 
 async function listCards() {
   return sql`
-    select id, title, description, assignee, due_date, tags, team, status, order_index
+    select id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority, order_index
     from cardboard_cards
     where classroom_id = ${activeClassroom.id}
     order by order_index asc, created_at asc;
   `
 }
 
+// Resolves a client-supplied assignee id to a real cardboard_users.id, or null
+// (unassigned) if absent/invalid. Never trusts the id without checking it exists.
+async function resolveAssigneeUserId(candidateId) {
+  if (!candidateId) return null
+  const [match] = await sql`select id from cardboard_users where id = ${candidateId} limit 1`
+  return match ? match.id : null
+}
+
 async function createCard(body, user) {
   const title = normalizeText(body.title)
   if (!title) throw new HttpError(400, 'Title is required.')
 
+  // The create form has no assignee picker (M1 scope) — always default to the creator.
+  const assigneeUserId = body.assigneeUserId ? await resolveAssigneeUserId(body.assigneeUserId) : user.id
+  const [assignee] = await sql`select display_name from cardboard_users where id = ${assigneeUserId} limit 1`
+
   const [created] = await sql`
     insert into cardboard_cards (
-      classroom_id, created_by_user_id, title, description, assignee, due_date, tags, team, status, order_index
+      classroom_id, created_by_user_id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority, order_index
     )
     values (
       ${activeClassroom.id},
-      ${user?.id ?? null},
+      ${user.id},
       ${title},
       ${normalizeText(body.description)},
-      ${user?.displayName || normalizeText(body.assignee) || 'Unassigned'},
+      ${assignee?.display_name ?? 'Unassigned'},
+      ${assigneeUserId},
       ${normalizeDate(body.dueDate)},
       ${normalizeTags(body.tags)},
       ${normalizeTeam(body.team)},
       ${normalizeStatus(body.cardStatus)},
+      ${normalizePriority(body.priority)},
       ${(await listCards()).length}
     )
-    returning id, title, description, assignee, due_date, tags, team, status, order_index;
+    returning id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority, order_index;
   `
 
   return created
@@ -429,7 +620,7 @@ async function createQuestion(body, user) {
 
   const [created] = await sql`
     insert into cardboard_questions (classroom_id, question, author)
-    values (${activeClassroom.id}, ${question}, ${user?.displayName || 'Anonymous'})
+    values (${activeClassroom.id}, ${question}, ${user.displayName})
     returning id, question, author
   `
 
@@ -456,7 +647,7 @@ async function createAnswer(questionId, body, user) {
 
   const [created] = await sql`
     insert into cardboard_answers (question_id, text, author)
-    values (${questionId}, ${text}, ${user?.displayName || 'Anonymous'})
+    values (${questionId}, ${text}, ${user.displayName})
     returning id, text, author
   `
 
@@ -521,93 +712,254 @@ function escapeSlack(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-async function updateCard(id, body) {
+async function updateCard(id, body, user) {
   const title = normalizeText(body.title)
   if (!title) throw new HttpError(400, 'Title is required.')
 
-  const [updated] = await sql`
-    update cardboard_cards
-    set title = ${title},
-        description = ${normalizeText(body.description)},
-        assignee = ${normalizeText(body.assignee) || 'Unassigned'},
-        due_date = ${normalizeDate(body.dueDate)},
-        tags = ${normalizeTags(body.tags)},
-        team = ${normalizeTeam(body.team)},
-        status = ${normalizeStatus(body.cardStatus)},
-        updated_at = now()
-    where id = ${id}
-      and classroom_id = ${activeClassroom.id}
-    returning id, title, description, assignee, due_date, tags, team, status, order_index;
+  const [before] = await sql`
+    select id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority
+    from cardboard_cards
+    where id = ${id} and classroom_id = ${activeClassroom.id}
+    limit 1
   `
+  if (!before) return null
 
+  const nextStatus = normalizeStatus(body.cardStatus)
+  const nextPriority = normalizePriority(body.priority)
+  // The edit form always sends the full assignee choice (a real id or null for
+  // "Unassigned") — no fallback to the previous value, unlike creation's default-to-creator.
+  const nextAssigneeUserId = await resolveAssigneeUserId(body.assigneeUserId)
+  const [assignee] = nextAssigneeUserId
+    ? await sql`select display_name from cardboard_users where id = ${nextAssigneeUserId} limit 1`
+    : [null]
+  const nextAssigneeName = assignee?.display_name ?? 'Unassigned'
+  const nextDueDate = normalizeDate(body.dueDate)
+  const nextTags = normalizeTags(body.tags)
+  const nextTeam = normalizeTeam(body.team)
+  const nextDescription = normalizeText(body.description)
+
+  const events = []
+  if (before.status !== nextStatus) events.push(['status_changed', 'status', before.status, nextStatus])
+  if (before.priority !== nextPriority) events.push(['priority_changed', 'priority', before.priority, nextPriority])
+  if (String(before.assignee_user_id ?? '') !== String(nextAssigneeUserId ?? '')) {
+    events.push(['assignee_changed', 'assignee', before.assignee, nextAssigneeName])
+  }
+  if (before.title !== title) events.push(['edited', 'title', before.title, title])
+  if ((before.description ?? '') !== nextDescription) events.push(['edited', 'description', before.description, nextDescription])
+  if (formatDate(before.due_date) !== (nextDueDate ?? '')) events.push(['edited', 'due_date', formatDate(before.due_date), nextDueDate])
+  if (before.team !== nextTeam) events.push(['edited', 'team', before.team, nextTeam])
+
+  const queries = [
+    sql`
+      update cardboard_cards
+      set title = ${title},
+          description = ${nextDescription},
+          assignee = ${nextAssigneeName},
+          assignee_user_id = ${nextAssigneeUserId},
+          due_date = ${nextDueDate},
+          tags = ${nextTags},
+          team = ${nextTeam},
+          status = ${nextStatus},
+          priority = ${nextPriority},
+          updated_at = now()
+      where id = ${id}
+        and classroom_id = ${activeClassroom.id}
+      returning id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority, order_index
+    `,
+    ...events.map(([eventType, field, oldValue, newValue]) => sql`
+      insert into cardboard_card_events (card_id, classroom_id, actor_user_id, event_type, field, old_value, new_value)
+      values (${id}, ${activeClassroom.id}, ${user.id}, ${eventType}, ${field}, ${String(oldValue ?? '')}, ${String(newValue ?? '')})
+    `),
+  ]
+
+  const results = await sql.transaction(queries)
+  const [updated] = results[0]
   return updated ?? null
 }
 
-async function listManagerNotes(user) {
-  const cardRows = await sql`
-    select manager_id, card_id, note_text
-    from cardboard_card_notes
-    where user_id = ${user.id}
-      and classroom_id = ${activeClassroom.id}
+async function recordCardEvent(cardId, actorUserId, eventType, field, oldValue, newValue) {
+  await sql`
+    insert into cardboard_card_events (card_id, classroom_id, actor_user_id, event_type, field, old_value, new_value)
+    values (${cardId}, ${activeClassroom.id}, ${actorUserId}, ${eventType}, ${field}, ${oldValue}, ${newValue})
   `
-  const scratchRows = await sql`
-    select manager_id, html
-    from cardboard_scratch_notes
-    where user_id = ${user.id}
-      and classroom_id = ${activeClassroom.id}
+}
+
+async function listCardEvents(cardId) {
+  const rows = await sql`
+    select e.id, e.event_type, e.field, e.old_value, e.new_value, e.created_at,
+           u.display_name as actor_name, u.avatar_url as actor_avatar_url
+    from cardboard_card_events e
+    join cardboard_users u on u.id = e.actor_user_id
+    where e.card_id = ${cardId}
+    order by e.created_at asc
+  `
+
+  return rows.map((row) => ({
+    id: row.id,
+    eventType: row.event_type,
+    field: row.field,
+    oldValue: row.old_value,
+    newValue: row.new_value,
+    createdAt: row.created_at,
+    actorName: row.actor_name,
+    actorAvatarUrl: row.actor_avatar_url,
+  }))
+}
+
+async function listTeamActivity(team, limit = 25) {
+  const rows = await sql`
+    select e.id, e.event_type, e.field, e.old_value, e.new_value, e.created_at,
+           u.display_name as actor_name, u.avatar_url as actor_avatar_url,
+           c.id as card_id, c.title as card_title
+    from cardboard_card_events e
+    join cardboard_users u on u.id = e.actor_user_id
+    join cardboard_cards c on c.id = e.card_id
+    where c.classroom_id = ${activeClassroom.id} and c.team = ${team}
+    order by e.created_at desc
+    limit ${limit}
+  `
+
+  return rows.map((row) => ({
+    id: row.id,
+    eventType: row.event_type,
+    field: row.field,
+    oldValue: row.old_value,
+    newValue: row.new_value,
+    createdAt: row.created_at,
+    actorName: row.actor_name,
+    actorAvatarUrl: row.actor_avatar_url,
+    cardId: row.card_id,
+    cardTitle: row.card_title,
+  }))
+}
+
+async function listCardComments(cardId) {
+  const rows = await sql`
+    select c.id, c.body, c.created_at, u.id as author_id, u.display_name as author_name, u.avatar_url as author_avatar_url
+    from cardboard_card_comments c
+    join cardboard_users u on u.id = c.author_user_id
+    where c.card_id = ${cardId}
+    order by c.created_at asc
+  `
+
+  return rows.map((row) => ({
+    id: row.id,
+    body: row.body,
+    createdAt: row.created_at,
+    authorId: row.author_id,
+    authorName: row.author_name,
+    authorAvatarUrl: row.author_avatar_url,
+  }))
+}
+
+async function createCardComment(cardId, body, user) {
+  const text = normalizeText(body.body).slice(0, 5000)
+  if (!text) throw new HttpError(400, 'Comment text is required.')
+
+  const [card] = await sql`
+    select id from cardboard_cards where id = ${cardId} and classroom_id = ${activeClassroom.id} limit 1
+  `
+  if (!card) throw new HttpError(404, 'Card not found.')
+
+  const [created] = await sql`
+    insert into cardboard_card_comments (card_id, classroom_id, author_user_id, body)
+    values (${cardId}, ${activeClassroom.id}, ${user.id}, ${text})
+    returning id, body, created_at
   `
 
   return {
-    notes: cardRows.reduce(
-      (acc, row) => ({
-        ...acc,
-        [row.manager_id]: {
-          ...acc[row.manager_id],
-          [row.card_id]: row.note_text ?? '',
-        },
-      }),
-      { manager1: {}, manager2: {} },
-    ),
-    scratchNotes: scratchRows.reduce(
-      (acc, row) => ({ ...acc, [row.manager_id]: sanitizeNoteHtml(row.html ?? '') }),
-      { manager1: '', manager2: '' },
-    ),
+    id: created.id,
+    body: created.body,
+    createdAt: created.created_at,
+    authorId: user.id,
+    authorName: user.displayName,
+    authorAvatarUrl: user.avatarUrl,
   }
 }
 
-async function saveManagerNotes(user, body) {
-  const notes = normalizeManagerNotes(body.notes)
-  const scratchNotes = normalizeScratchNotes(body.scratchNotes)
+async function listRoster() {
+  const rows = await sql`
+    select id, display_name, github_login, role, team
+    from cardboard_users
+    order by display_name asc
+  `
 
-  for (const managerId of ['manager1', 'manager2']) {
-    for (const [cardId, noteText] of Object.entries(notes[managerId])) {
-      await sql`
-        insert into cardboard_card_notes (
-          user_id, classroom_id, manager_id, card_id, note_text, updated_at
-        )
-        values (
-          ${user.id}, ${activeClassroom.id}, ${managerId}, ${cardId}, ${noteText}, now()
-        )
-        on conflict (user_id, classroom_id, manager_id, card_id) do update
-          set note_text = excluded.note_text,
-              updated_at = now()
-      `
-    }
+  return rows.map((row) => ({
+    id: row.id,
+    displayName: row.display_name,
+    githubLogin: row.github_login,
+    role: row.role,
+    team: row.team,
+  }))
+}
 
-    await sql`
-      insert into cardboard_scratch_notes (
-        user_id, classroom_id, manager_id, html, updated_at
-      )
-      values (
-        ${user.id}, ${activeClassroom.id}, ${managerId}, ${scratchNotes[managerId]}, now()
-      )
-      on conflict (user_id, classroom_id, manager_id) do update
-        set html = excluded.html,
-            updated_at = now()
-    `
+async function updateUserRoleTeam(userId, body) {
+  const role = body.role === 'pm' ? 'pm' : 'student'
+  const team = body.team === 'team2' ? 'team2' : body.team === 'team1' ? 'team1' : null
+  if (role === 'pm' && !team) throw new HttpError(400, 'PM must be assigned a team.')
+
+  const [updated] = await sql`
+    update cardboard_users
+    set role = ${role}, team = ${team}, updated_at = now()
+    where id = ${userId}
+    returning id, display_name, github_login, role, team
+  `
+
+  if (!updated) return null
+
+  return {
+    id: updated.id,
+    displayName: updated.display_name,
+    githubLogin: updated.github_login,
+    role: updated.role,
+    team: updated.team,
   }
+}
 
-  return listManagerNotes(user)
+async function listPmNotes(user) {
+  const cardRows = await sql`
+    select card_id, note_text
+    from cardboard_card_notes
+    where user_id = ${user.id}
+      and classroom_id = ${activeClassroom.id}
+      and team = ${user.team}
+  `
+  const [scratch] = await sql`
+    select html
+    from cardboard_scratch_notes
+    where user_id = ${user.id}
+      and classroom_id = ${activeClassroom.id}
+      and team = ${user.team}
+  `
+
+  return {
+    notes: Object.fromEntries(cardRows.map((row) => [row.card_id, row.note_text ?? ''])),
+    scratchNotes: sanitizeNoteHtml(scratch?.html ?? ''),
+  }
+}
+
+async function savePmNotes(user, body) {
+  const notes = normalizeCardNoteMap(body.notes)
+  const scratchHtml = sanitizeNoteHtml(body.scratchNotes ?? '')
+
+  const noteQueries = Object.entries(notes).map(([cardId, noteText]) => sql`
+    insert into cardboard_card_notes (user_id, classroom_id, team, card_id, note_text, updated_at)
+    values (${user.id}, ${activeClassroom.id}, ${user.team}, ${cardId}, ${noteText}, now())
+    on conflict (user_id, classroom_id, team, card_id) do update
+      set note_text = excluded.note_text, updated_at = now()
+  `)
+
+  await sql.transaction([
+    ...noteQueries,
+    sql`
+      insert into cardboard_scratch_notes (user_id, classroom_id, team, html, updated_at)
+      values (${user.id}, ${activeClassroom.id}, ${user.team}, ${scratchHtml}, now())
+      on conflict (user_id, classroom_id, team) do update
+        set html = excluded.html, updated_at = now()
+    `,
+  ])
+
+  return listPmNotes(user)
 }
 
 function startGithubLogin(req, res) {
@@ -722,7 +1074,7 @@ async function getCurrentUser(req) {
   if (!sessionToken) return null
 
   const [user] = await sql`
-    select u.id, u.github_login, u.display_name, u.email, u.avatar_url
+    select u.id, u.github_login, u.display_name, u.email, u.avatar_url, u.role, u.team
     from cardboard_sessions s
     join cardboard_users u on u.id = s.user_id
     where s.token_hash = ${hashToken(sessionToken)}
@@ -732,13 +1084,7 @@ async function getCurrentUser(req) {
 
   if (!user) return null
 
-  return {
-    id: user.id,
-    githubLogin: user.github_login,
-    displayName: user.display_name,
-    email: user.email,
-    avatarUrl: user.avatar_url,
-  }
+  return userRowToPayload(user)
 }
 
 async function updateCurrentUser(user, body) {
@@ -750,21 +1096,42 @@ async function updateCurrentUser(user, body) {
     set display_name = ${displayName},
         updated_at = now()
     where id = ${user.id}
-    returning id, github_login, display_name, email, avatar_url
+    returning id, github_login, display_name, email, avatar_url, role, team
   `
 
+  return userRowToPayload(updated)
+}
+
+function userRowToPayload(row) {
   return {
-    id: updated.id,
-    githubLogin: updated.github_login,
-    displayName: updated.display_name,
-    email: updated.email,
-    avatarUrl: updated.avatar_url,
+    id: row.id,
+    githubLogin: row.github_login,
+    displayName: row.display_name,
+    email: row.email,
+    avatarUrl: row.avatar_url,
+    role: row.role,
+    team: row.team,
+    isAdmin: isAdminLogin(row.github_login),
   }
+}
+
+function isAdminLogin(githubLogin) {
+  const admins = (process.env.ADMIN_GITHUB_LOGINS ?? '')
+    .split(',')
+    .map((login) => login.trim().toLowerCase())
+    .filter(Boolean)
+  return admins.includes(String(githubLogin).toLowerCase())
 }
 
 async function requireCurrentUser(req) {
   const user = await getCurrentUser(req)
-  if (!user) throw new HttpError(401, 'Sign in to save notes.')
+  if (!user) throw new HttpError(401, 'Sign in to continue.')
+  return user
+}
+
+async function requireAdmin(req) {
+  const user = await requireCurrentUser(req)
+  if (!user.isAdmin) throw new HttpError(403, 'Admin access required.')
   return user
 }
 
@@ -782,10 +1149,12 @@ function cardRowToPayload(row) {
     title: row.title,
     description: row.description ?? '',
     assignee: row.assignee ?? 'Unassigned',
+    assigneeUserId: row.assignee_user_id ?? null,
     dueDate: formatDate(row.due_date),
     tags: Array.isArray(row.tags) ? row.tags : [],
     team: row.team === 'team2' ? 'team2' : 'team1',
     cardStatus: row.status === 'flowing' || row.status === 'done' ? row.status : 'started',
+    priority: normalizePriority(row.priority),
   }
 }
 
@@ -909,13 +1278,6 @@ function normalizeTags(value) {
   return Array.isArray(value) ? value.map(normalizeText).filter(Boolean) : []
 }
 
-function normalizeManagerNotes(value) {
-  return {
-    manager1: normalizeCardNoteMap(value?.manager1),
-    manager2: normalizeCardNoteMap(value?.manager2),
-  }
-}
-
 function normalizeCardNoteMap(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
 
@@ -924,13 +1286,6 @@ function normalizeCardNoteMap(value) {
       .filter(([cardId]) => /^[0-9a-f-]{36}$/i.test(cardId))
       .map(([cardId, noteText]) => [cardId, normalizeText(noteText).slice(0, 5000)]),
   )
-}
-
-function normalizeScratchNotes(value) {
-  return {
-    manager1: sanitizeNoteHtml(value?.manager1 ?? ''),
-    manager2: sanitizeNoteHtml(value?.manager2 ?? ''),
-  }
 }
 
 function sanitizeNoteHtml(value) {
@@ -950,6 +1305,10 @@ function normalizeTeam(value) {
 
 function normalizeStatus(value) {
   return value === 'flowing' || value === 'done' ? value : 'started'
+}
+
+function normalizePriority(value) {
+  return value === 'high' || value === 'low' ? value : 'medium'
 }
 
 function loadEnv() {

@@ -1,4 +1,4 @@
-import type { QnaAnswer, QnaQuestion, Task } from '../types'
+import type { CardComment, CardEvent, QnaAnswer, QnaQuestion, Role, RosterUser, Task, TeamActivityEvent, TeamId } from '../types'
 
 type CardPayload = Omit<Task, 'id'> & { id: string }
 
@@ -8,6 +8,9 @@ export interface AuthUser {
   displayName: string
   email: string | null
   avatarUrl: string | null
+  role: Role
+  team: TeamId | null
+  isAdmin: boolean
 }
 
 interface CardsResponse {
@@ -39,13 +42,33 @@ interface OkResponse {
   ok: boolean
 }
 
-export type ManagerId = 'manager1' | 'manager2'
-export type ManagerCardNotes = Record<ManagerId, Record<string, string>>
-export type ScratchNotes = Record<ManagerId, string>
+interface RosterResponse {
+  users: RosterUser[]
+}
 
-export interface ManagerNotesPayload {
-  notes: ManagerCardNotes
-  scratchNotes: ScratchNotes
+interface UserResponse {
+  user: RosterUser
+}
+
+interface CardEventsResponse {
+  events: CardEvent[]
+}
+
+interface CardCommentsResponse {
+  comments: CardComment[]
+}
+
+interface CardCommentResponse {
+  comment: CardComment
+}
+
+interface TeamActivityResponse {
+  events: TeamActivityEvent[]
+}
+
+export interface PmNotesPayload {
+  notes: Record<string, string>
+  scratchNotes: string
 }
 
 export async function fetchMe(): Promise<MeResponse> {
@@ -91,18 +114,59 @@ export async function createAnswer(questionId: string, text: string): Promise<Qn
   return data.answer
 }
 
-export async function fetchManagerNotes(): Promise<ManagerNotesPayload> {
-  return apiRequest<ManagerNotesPayload>('/api/manager-notes')
+export async function fetchPmNotes(): Promise<PmNotesPayload> {
+  return apiRequest<PmNotesPayload>('/api/pm-notes')
 }
 
-export async function saveManagerNotes(payload: ManagerNotesPayload): Promise<ManagerNotesPayload> {
-  return apiRequest<ManagerNotesPayload>('/api/manager-notes', {
+export async function savePmNotes(payload: PmNotesPayload): Promise<PmNotesPayload> {
+  return apiRequest<PmNotesPayload>('/api/pm-notes', {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
-export async function createCard(card: Omit<Task, 'id'>): Promise<CardPayload> {
+export async function fetchRoster(): Promise<RosterUser[]> {
+  const data = await apiRequest<RosterResponse>('/api/roster')
+  return data.users
+}
+
+export async function fetchAdminUsers(): Promise<RosterUser[]> {
+  const data = await apiRequest<RosterResponse>('/api/admin/users')
+  return data.users
+}
+
+export async function updateUserRoleTeam(userId: string, role: Role, team: TeamId | null): Promise<RosterUser> {
+  const data = await apiRequest<UserResponse>(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ role, team }),
+  })
+  return data.user
+}
+
+export async function fetchCardEvents(cardId: Task['id']): Promise<CardEvent[]> {
+  const data = await apiRequest<CardEventsResponse>(`/api/cards/${cardId}/events`)
+  return data.events
+}
+
+export async function fetchCardComments(cardId: Task['id']): Promise<CardComment[]> {
+  const data = await apiRequest<CardCommentsResponse>(`/api/cards/${cardId}/comments`)
+  return data.comments
+}
+
+export async function createCardComment(cardId: Task['id'], body: string): Promise<CardComment> {
+  const data = await apiRequest<CardCommentResponse>(`/api/cards/${cardId}/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
+  })
+  return data.comment
+}
+
+export async function fetchTeamActivity(team: TeamId): Promise<TeamActivityEvent[]> {
+  const data = await apiRequest<TeamActivityResponse>(`/api/teams/${team}/activity`)
+  return data.events
+}
+
+export async function createCard(card: Omit<Task, 'id' | 'assignee'>): Promise<CardPayload> {
   const data = await apiRequest<CardResponse>('/api/cards', {
     method: 'POST',
     body: JSON.stringify(card),
@@ -110,7 +174,7 @@ export async function createCard(card: Omit<Task, 'id'>): Promise<CardPayload> {
   return data.card
 }
 
-export async function updateCard(id: Task['id'], card: Omit<Task, 'id'>): Promise<CardPayload> {
+export async function updateCard(id: Task['id'], card: Omit<Task, 'id' | 'assignee'>): Promise<CardPayload> {
   const data = await apiRequest<CardResponse>(`/api/cards/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(card),

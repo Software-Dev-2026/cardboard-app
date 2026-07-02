@@ -1,19 +1,41 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 import './App.css'
-import { createAnswer, createCard, createQuestion, fetchCards, fetchManagerNotes, fetchMe, fetchQuestions, logout, saveManagerNotes, updateCard, updateDefaultName } from './utils/api'
+import {
+  createAnswer, createCard, createCardComment, createQuestion, fetchAdminUsers, fetchCardComments,
+  fetchCardEvents, fetchCards, fetchMe, fetchPmNotes, fetchQuestions, fetchRoster, fetchTeamActivity, logout,
+  savePmNotes, updateCard, updateDefaultName, updateUserRoleTeam,
+} from './utils/api'
 import type { AuthUser } from './utils/api'
-import type { CardStatus, ManagerId, QnaQuestion, TabId, Task, TeamId } from './types'
+import type {
+  CardComment, CardEvent, CardStatus, Priority, QnaQuestion, Role, RosterUser, TabId, Task, TeamActivityEvent, TeamId,
+} from './types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 const PRESET_TAGS = ['Blocked', 'Need Help'] as const
 
 const CARD_STATUSES: Array<{ id: CardStatus; label: string; shortLabel: string }> = [
-  { id: 'started', label: 'Just Started / My Idea', shortLabel: 'Just Started' },
-  { id: 'flowing', label: "I'm in the Flow",        shortLabel: 'In the Flow'   },
-  { id: 'done',    label: 'Finishing Up / Done',    shortLabel: 'Done'          },
+  { id: 'started', label: 'Not Started', shortLabel: 'Not Started' },
+  { id: 'flowing', label: 'In Progress', shortLabel: 'In Progress' },
+  { id: 'done',    label: 'Done',        shortLabel: 'Done'        },
 ]
+
+const PRIORITIES: Array<{ id: Priority; label: string }> = [
+  { id: 'high',   label: 'High'   },
+  { id: 'medium', label: 'Medium' },
+  { id: 'low',    label: 'Low'    },
+]
+
+type Theme = 'light' | 'dark'
+
+function getInitialTheme(): Theme {
+  if (typeof document !== 'undefined') {
+    const attr = document.documentElement.getAttribute('data-theme')
+    if (attr === 'light' || attr === 'dark') return attr
+  }
+  return 'light'
+}
 
 interface EditState {
   title: string
@@ -22,6 +44,8 @@ interface EditState {
   presetTags: string[]
   team: TeamId
   cardStatus: CardStatus
+  assigneeUserId: string | null
+  priority: Priority
 }
 
 interface TaskDraft {
@@ -30,74 +54,12 @@ interface TaskDraft {
   dueDate: string
   presetTags: string[]
   team: TeamId
+  priority: Priority
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TODAY = new Date()
-
-const DEMO_TASKS: Task[] = [
-  {
-    id: 'demo-1',
-    title: 'Design system audit',
-    description: 'Review component library for consistency gaps before the Q3 release.',
-    assignee: 'Jordan',
-    dueDate: offsetDate(3),
-    tags: ['Design', 'Q3'],
-    team: 'team1',
-    cardStatus: 'flowing',
-  },
-  {
-    id: 'demo-2',
-    title: 'Onboarding flow revamp',
-    description: 'Simplify the 5-step onboarding to 3 steps based on drop-off data.',
-    assignee: 'Avery',
-    dueDate: offsetDate(7),
-    tags: ['UX', 'Blocked'],
-    team: 'team1',
-    cardStatus: 'started',
-  },
-  {
-    id: 'demo-3',
-    title: 'Write release notes',
-    description: 'Draft v2.4 release notes covering new features and bug fixes.',
-    assignee: 'Morgan',
-    dueDate: offsetDate(1),
-    tags: ['Docs'],
-    team: 'team1',
-    cardStatus: 'done',
-  },
-  {
-    id: 'demo-4',
-    title: 'API rate limit investigation',
-    description: 'Spike on why heavy users are hitting 429s on the /export endpoint.',
-    assignee: 'Riley',
-    dueDate: offsetDate(2),
-    tags: ['Backend', 'Blocked'],
-    team: 'team2',
-    cardStatus: 'started',
-  },
-  {
-    id: 'demo-5',
-    title: 'Mobile push notification opt-in',
-    description: 'Implement opt-in prompt and preference storage for push notifications.',
-    assignee: 'Casey',
-    dueDate: offsetDate(6),
-    tags: ['Mobile'],
-    team: 'team2',
-    cardStatus: 'flowing',
-  },
-  {
-    id: 'demo-6',
-    title: 'Accessibility pass — settings page',
-    description: 'Run axe-core and fix all critical a11y violations on the settings screen.',
-    assignee: 'Avery',
-    dueDate: offsetDate(10),
-    tags: ['A11y', 'Need Help'],
-    team: 'team2',
-    cardStatus: 'done',
-  },
-]
 
 const INITIAL_DRAFT: TaskDraft = {
   title: '',
@@ -105,6 +67,7 @@ const INITIAL_DRAFT: TaskDraft = {
   dueDate: offsetDate(4),
   presetTags: [],
   team: 'team1',
+  priority: 'medium',
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -126,7 +89,44 @@ function taskToEditState(task: Task): EditState {
     presetTags: task.tags.filter((t) => preset.includes(t)),
     team: task.team,
     cardStatus: task.cardStatus,
+    assigneeUserId: task.assigneeUserId,
+    priority: task.priority,
   }
+}
+
+function statusLabel(status: string | null): string {
+  return CARD_STATUSES.find((s) => s.id === status)?.shortLabel ?? status ?? 'Unknown'
+}
+
+function formatEventText(event: CardEvent): string {
+  switch (event.eventType) {
+    case 'created':
+      return `${event.actorName} created this card`
+    case 'status_changed':
+      return `${event.actorName} moved this from ${statusLabel(event.oldValue)} to ${statusLabel(event.newValue)}`
+    case 'assignee_changed':
+      return `${event.actorName} reassigned this to ${event.newValue || 'Unassigned'}`
+    case 'priority_changed':
+      return `${event.actorName} changed priority from ${priorityLabel(event.oldValue)} to ${priorityLabel(event.newValue)}`
+    default:
+      return `${event.actorName} updated ${event.field ?? 'a field'}`
+  }
+}
+
+function priorityLabel(priority: string | null): string {
+  return PRIORITIES.find((p) => p.id === priority)?.label ?? priority ?? 'Unknown'
+}
+
+function formatRelativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime()
+  const minutes = Math.round(diffMs / 60000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.round(hours / 24)
+  if (days < 7) return `${days}d ago`
+  return formatShortDate(iso.slice(0, 10))
 }
 
 // ── TabItem ───────────────────────────────────────────────────────────────────
@@ -168,27 +168,45 @@ function TabItem({
   )
 }
 
+// ── ThemeToggle ───────────────────────────────────────────────────────────────
+
+function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      className="theme-toggle"
+      onClick={onToggle}
+      aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+      title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+    >
+      {theme === 'dark' ? (
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+        </svg>
+      ) : (
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" />
+        </svg>
+      )}
+    </button>
+  )
+}
+
 // ── AccountMenu ───────────────────────────────────────────────────────────────
+// Only rendered once a user is signed in — the app-level sign-in wall handles
+// the logged-out state, so this component can assume `user` is real.
 
 function AccountMenu({
-  user, githubConfigured, onLogout, onUserUpdate,
+  user, onLogout, onUserUpdate,
 }: {
-  user: AuthUser | null
-  githubConfigured: boolean
+  user: AuthUser
   onLogout: () => void
   onUserUpdate: (user: AuthUser) => void
 }) {
-  const [nameValue, setNameValue] = useState(user?.displayName ?? '')
+  const [nameValue, setNameValue] = useState(user.displayName)
   const [isSavingName, setIsSavingName] = useState(false)
   const [nameError, setNameError] = useState('')
-
-  if (!githubConfigured) {
-    return <span className="auth-status">GitHub OAuth not configured</span>
-  }
-
-  if (!user) {
-    return <a className="github-login-btn" href="/auth/github/start">Sign in with GitHub</a>
-  }
 
   async function saveDefaultName() {
     const displayName = nameValue.trim()
@@ -284,20 +302,120 @@ function StageSelector({ status, onChange }: { status: CardStatus; onChange: (s:
   )
 }
 
+// ── CardActivity ──────────────────────────────────────────────────────────────
+
+function CardActivity({ cardId }: { cardId: Task['id'] }) {
+  const [events, setEvents] = useState<CardEvent[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+
+  useEffect(() => {
+    let isActive = true
+    async function load() {
+      try {
+        const data = await fetchCardEvents(cardId)
+        if (isActive) setEvents(data)
+      } finally {
+        if (isActive) setIsLoading(false)
+      }
+    }
+    void load()
+    return () => { isActive = false }
+  }, [cardId])
+
+  if (isLoading) return <p className="loading-text">Loading activity...</p>
+  if (events.length === 0) return <p className="no-answers">No activity yet.</p>
+
+  return (
+    <ul className="activity-list">
+      {events.map((event) => (
+        <li key={event.id} className="activity-item">
+          <span className="activity-text">{formatEventText(event)}</span>
+          <span className="activity-time">{formatRelativeTime(event.createdAt)}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+// ── CardComments ──────────────────────────────────────────────────────────────
+
+function CardComments({ cardId }: { cardId: Task['id'] }) {
+  const [comments, setComments] = useState<CardComment[]>([])
+  const [draftText, setDraftText] = useState('')
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  useEffect(() => {
+    let isActive = true
+    async function load() {
+      try {
+        const data = await fetchCardComments(cardId)
+        if (isActive) setComments(data)
+      } finally {
+        if (isActive) setIsLoading(false)
+      }
+    }
+    void load()
+    return () => { isActive = false }
+  }, [cardId])
+
+  async function submitComment() {
+    const text = draftText.trim(); if (!text) return
+    setIsSubmitting(true)
+    try {
+      const comment = await createCardComment(cardId, text)
+      setComments((cur) => [...cur, comment])
+      setDraftText('')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="card-comments">
+      {isLoading ? (
+        <p className="loading-text">Loading comments...</p>
+      ) : comments.length === 0 ? (
+        <p className="no-answers">No comments yet.</p>
+      ) : (
+        <ul className="answers-list">
+          {comments.map((comment) => (
+            <li key={comment.id} className="answer-item">
+              <span className="qna-a-badge">{comment.authorName.slice(0, 1).toUpperCase()}</span>
+              <div className="answer-content">
+                <p>{comment.body}</p>
+                <span className="answer-author">{comment.authorName} · {formatRelativeTime(comment.createdAt)}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="add-answer-form">
+        <textarea className="feedback-textarea" placeholder="Write a comment..." value={draftText} rows={2}
+          onChange={(e) => setDraftText(e.target.value)} />
+        <div className="answer-form-footer">
+          <button className="action-btn-save" onClick={() => void submitComment()} disabled={!draftText.trim() || isSubmitting}>
+            {isSubmitting ? 'Posting...' : 'Comment'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── TaskCard ──────────────────────────────────────────────────────────────────
 
 function TaskCard({
-  task, index, onUpdate, teamNames,
+  task, index, onUpdate, teamNames, roster,
 }: {
   task: Task; index: number
   onUpdate: (id: Task['id'], updated: Partial<Task>) => void
   teamNames: Record<TeamId, string>
+  roster: RosterUser[]
 }) {
   const [editing, setEditing] = useState(false)
   const [editState, setEditState] = useState<EditState>(() => taskToEditState(task))
-  const [showFeedback, setShowFeedback] = useState(false)
-  const [feedbackText, setFeedbackText] = useState('')
-  const [submitted, setSubmitted] = useState<string | null>(null)
+  const [detailsOpen, setDetailsOpen] = useState(false)
 
   const dueState = getDueState(task.dueDate)
   const shownTags = visibleTags(task.tags)
@@ -309,22 +427,18 @@ function TaskCard({
     onUpdate(task.id, {
       title,
       description: editState.description.trim(),
-      assignee: task.assignee,
+      assigneeUserId: editState.assigneeUserId,
       dueDate: editState.dueDate,
       tags: buildTags(editState.presetTags),
       team: editState.team,
       cardStatus: editState.cardStatus,
+      priority: editState.priority,
     })
     setEditing(false)
   }
 
   function updateEdit<K extends keyof EditState>(field: K, value: EditState[K]) {
     setEditState((cur) => ({ ...cur, [field]: value }))
-  }
-
-  function submitFeedback() {
-    const t = feedbackText.trim(); if (!t) return
-    setSubmitted(t); setFeedbackText(''); setShowFeedback(false)
   }
 
   if (editing) {
@@ -346,6 +460,16 @@ function TaskCard({
             <input type="date" value={editState.dueDate}
               onChange={(e) => updateEdit('dueDate', e.target.value)} />
           </label>
+          <label className="field">
+            <span>Assignee</span>
+            <select value={editState.assigneeUserId ?? ''}
+              onChange={(e) => updateEdit('assigneeUserId', e.target.value || null)}>
+              <option value="">Unassigned</option>
+              {roster.map((person) => (
+                <option key={person.id} value={person.id}>{person.displayName}</option>
+              ))}
+            </select>
+          </label>
           <div className="field">
             <span>Status tags</span>
             <TagToggleRow selected={editState.presetTags}
@@ -360,6 +484,19 @@ function TaskCard({
                     checked={editState.cardStatus === s.id}
                     onChange={() => updateEdit('cardStatus', s.id)} />
                   {s.shortLabel}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="field">
+            <span>Priority</span>
+            <div className="section-radio-row">
+              {PRIORITIES.map((p) => (
+                <label key={p.id} className={`section-radio-option priority-radio-${p.id} ${editState.priority === p.id ? 'selected' : ''}`}>
+                  <input type="radio" name={`edit-priority-${task.id}`}
+                    checked={editState.priority === p.id}
+                    onChange={() => updateEdit('priority', p.id)} />
+                  {p.label}
                 </label>
               ))}
             </div>
@@ -390,6 +527,7 @@ function TaskCard({
       <div className="task-due-row">
         <StageSelector status={task.cardStatus} onChange={(s) => onUpdate(task.id, { cardStatus: s })} />
         <div className="task-due-actions">
+          <span className={`priority-badge priority-${task.priority}`}>{priorityLabel(task.priority)}</span>
           <span className={`due-pill due-${dueState.tone}`}>{dueState.label}</span>
           <button className="edit-card-btn" onClick={startEdit}>Edit</button>
         </div>
@@ -414,30 +552,15 @@ function TaskCard({
         <span>{formatShortDate(task.dueDate)}</span>
       </div>
 
-      {submitted && (
-        <div className="feedback-submitted">
-          <span className="feedback-submitted-label">Feedback</span>
-          <p>{submitted}</p>
-          <button className="feedback-edit-btn"
-            onClick={() => { setSubmitted(null); setFeedbackText(submitted); setShowFeedback(true) }}>
-            Edit
-          </button>
-        </div>
-      )}
+      <button className="feedback-btn" onClick={() => setDetailsOpen((v) => !v)}>
+        {detailsOpen ? 'Hide comments & activity' : 'Comments & activity'}
+      </button>
 
-      {showFeedback ? (
-        <div className="feedback-form">
-          <textarea className="feedback-textarea" placeholder="Leave feedback… (⌘↵ to submit)"
-            value={feedbackText} rows={3} autoFocus
-            onChange={(e) => setFeedbackText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitFeedback(); if (e.key === 'Escape') setShowFeedback(false) }} />
-          <div className="feedback-actions">
-            <button className="action-btn-cancel" onClick={() => setShowFeedback(false)}>Cancel</button>
-            <button className="action-btn-save" onClick={submitFeedback} disabled={!feedbackText.trim()}>Submit</button>
-          </div>
+      {detailsOpen && (
+        <div className="card-details-body">
+          <CardActivity cardId={task.id} />
+          <CardComments cardId={task.id} />
         </div>
-      ) : (
-        !submitted && <button className="feedback-btn" onClick={() => setShowFeedback(true)}>+ Feedback</button>
       )}
     </article>
   )
@@ -446,11 +569,12 @@ function TaskCard({
 // ── SectionColumn ─────────────────────────────────────────────────────────────
 
 function SectionColumn({
-  sectionId, label, tasks, onUpdate, teamNames,
+  sectionId, label, tasks, onUpdate, teamNames, roster,
 }: {
   sectionId: CardStatus; label: string; tasks: Task[]
   onUpdate: (id: Task['id'], updated: Partial<Task>) => void
   teamNames: Record<TeamId, string>
+  roster: RosterUser[]
 }) {
   return (
     <div className={`section-col section-col-${sectionId}`}>
@@ -464,7 +588,7 @@ function SectionColumn({
       ) : (
         <div className="section-cards">
           {tasks.map((task, i) => (
-            <TaskCard key={task.id} task={task} index={i} onUpdate={onUpdate} teamNames={teamNames} />
+            <TaskCard key={task.id} task={task} index={i} onUpdate={onUpdate} teamNames={teamNames} roster={roster} />
           ))}
         </div>
       )}
@@ -523,7 +647,7 @@ function QnaCard({
             <textarea className="feedback-textarea" placeholder="Write an answer..." value={answerText} rows={2}
               onChange={(e) => setAnswerText(e.target.value)} />
             <div className="answer-form-footer">
-              <span className="posting-as">Posting as {defaultName || 'Anonymous'}</span>
+              <span className="posting-as">Posting as {defaultName}</span>
               <button className="action-btn-save" onClick={submitAnswer} disabled={!answerText.trim()}>Answer</button>
             </div>
           </div>
@@ -548,45 +672,38 @@ function QnaComposer({ onPost, defaultName }: { onPost: (question: string) => Pr
         <textarea placeholder="What do you need to know?" value={question} rows={4}
           onChange={(e) => setQuestion(e.target.value)} />
       </label>
-      <p className="posting-as">Posting as {defaultName || 'Anonymous'}</p>
+      <p className="posting-as">Posting as {defaultName}</p>
       <button className="primary-button" type="submit" disabled={!question.trim()}>Post question</button>
     </form>
   )
 }
 
-// ── ManagerNotes ──────────────────────────────────────────────────────────────
+// ── PmNotes ───────────────────────────────────────────────────────────────────
+// A PM only ever sees and edits their own team's notes — team is the PM's own
+// `user.team`, never a free choice, closing the hole where the old manager1/
+// manager2 toggle let any signed-in user write either manager's notes.
 
-function ManagerNotes({
-  tasks, teamNames, user,
+function PmNotes({
+  tasks, teamName,
 }: {
-  tasks: Record<TeamId, Task[]>
-  teamNames: Record<TeamId, string>
-  user: AuthUser | null
+  tasks: Task[]
+  teamName: string
 }) {
-  const [activeManager, setActiveManager] = useState<ManagerId>('manager1')
-  const [notes, setNotes] = useState<Record<ManagerId, Record<string, string>>>({ manager1: {}, manager2: {} })
-  const [scratchNotes, setScratchNotes] = useState<Record<ManagerId, string>>({ manager1: '', manager2: '' })
+  const [notes, setNotes] = useState<Record<string, string>>({})
+  const [scratchNotes, setScratchNotes] = useState('')
   const [savedNotesLoaded, setSavedNotesLoaded] = useState(false)
   const scratchRef = useRef<HTMLDivElement>(null)
 
-  const activeTeam: TeamId = activeManager === 'manager1' ? 'team1' : 'team2'
-  const activeTeamTasks = tasks[activeTeam]
-
   function setNote(taskId: string, text: string) {
-    setNotes((cur) => ({ ...cur, [activeManager]: { ...cur[activeManager], [taskId]: text } }))
+    setNotes((cur) => ({ ...cur, [taskId]: text }))
   }
 
   useEffect(() => {
     let isActive = true
 
     async function loadSavedNotes() {
-      if (!user) {
-        setSavedNotesLoaded(false)
-        return
-      }
-
       try {
-        const saved = await fetchManagerNotes()
+        const saved = await fetchPmNotes()
         if (!isActive) return
         setNotes(saved.notes)
         setScratchNotes(saved.scratchNotes)
@@ -598,45 +715,34 @@ function ManagerNotes({
 
     void loadSavedNotes()
     return () => { isActive = false }
-  }, [user])
+  }, [])
 
   useEffect(() => {
-    if (!user || !savedNotesLoaded) return
+    if (!savedNotesLoaded) return
 
     const timeout = window.setTimeout(() => {
-      void saveManagerNotes({ notes, scratchNotes })
+      void savePmNotes({ notes, scratchNotes })
     }, 650)
 
     return () => window.clearTimeout(timeout)
-  }, [notes, scratchNotes, savedNotesLoaded, user])
+  }, [notes, scratchNotes, savedNotesLoaded])
 
   function formatScratch(command: 'bold' | 'italic' | 'underline') {
     scratchRef.current?.focus()
     document.execCommand(command)
-    setScratchNotes((cur) => ({ ...cur, [activeManager]: scratchRef.current?.innerHTML ?? '' }))
+    setScratchNotes(scratchRef.current?.innerHTML ?? '')
   }
 
   return (
     <div className="notes-page">
       <div className="notes-header">
-        <div><p className="eyebrow">Manager View</p><h2 className="notes-title">Notes</h2></div>
-        <div className="manager-toggle">
-          {(['manager1', 'manager2'] as ManagerId[]).map((mid) => {
-            const team: TeamId = mid === 'manager1' ? 'team1' : 'team2'
-            return (
-              <button key={mid} className={`manager-toggle-btn ${activeManager === mid ? 'active' : ''}`}
-                onClick={() => setActiveManager(mid)}>
-                {teamNames[team]} Manager
-              </button>
-            )
-          })}
-        </div>
+        <div><p className="eyebrow">PM View</p><h2 className="notes-title">{teamName} Notes</h2></div>
       </div>
-      {activeTeamTasks.length === 0 ? (
-        <p className="loading-text">No cards in {teamNames[activeTeam]} yet.</p>
+      {tasks.length === 0 ? (
+        <p className="loading-text">No cards in {teamName} yet.</p>
       ) : (
         <div className="notes-grid">
-          {activeTeamTasks.map((task) => {
+          {tasks.map((task) => {
             const dueState = getDueState(task.dueDate)
             const statusInfo = CARD_STATUSES.find((s) => s.id === task.cardStatus)
             const shownTags = visibleTags(task.tags)
@@ -656,9 +762,9 @@ function ManagerNotes({
                   <p className="note-card-sub">{task.assignee} · {formatShortDate(task.dueDate)}</p>
                 </div>
                 <label className="field note-field">
-                  <span>Manager notes</span>
+                  <span>PM notes</span>
                   <textarea className="note-textarea" placeholder="Add observations, blockers, or action items..."
-                    value={notes[activeManager][String(task.id)] ?? ''} rows={4}
+                    value={notes[String(task.id)] ?? ''} rows={4}
                     onChange={(e) => setNote(String(task.id), e.target.value)} />
                 </label>
               </div>
@@ -678,19 +784,207 @@ function ManagerNotes({
           </div>
         </div>
         <div
-          key={activeManager}
           ref={scratchRef}
           className="scratch-editor"
           contentEditable
           role="textbox"
-          aria-label={`${teamNames[activeTeam]} manager scratchpad`}
+          aria-label={`${teamName} PM scratchpad`}
           data-placeholder="Write general meeting notes, follow-ups, or reminders..."
-          dangerouslySetInnerHTML={{ __html: scratchNotes[activeManager] }}
-          onInput={(e) => {
-            setScratchNotes((cur) => ({ ...cur, [activeManager]: e.currentTarget.innerHTML }))
-          }}
+          dangerouslySetInnerHTML={{ __html: scratchNotes }}
+          onInput={(e) => setScratchNotes(e.currentTarget.innerHTML)}
         />
       </section>
+    </div>
+  )
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+
+function Dashboard({
+  team, teamName, tasks, isAdmin, availableTeams, onTeamChange,
+}: {
+  team: TeamId
+  teamName: string
+  tasks: Task[]
+  isAdmin: boolean
+  availableTeams: Array<{ id: TeamId; label: string }>
+  onTeamChange: (team: TeamId) => void
+}) {
+  const [activity, setActivity] = useState<TeamActivityEvent[]>([])
+  const [isLoadingActivity, setIsLoadingActivity] = useState(true)
+
+  useEffect(() => {
+    let isActive = true
+    async function load() {
+      try {
+        const data = await fetchTeamActivity(team)
+        if (isActive) setActivity(data)
+      } finally {
+        if (isActive) setIsLoadingActivity(false)
+      }
+    }
+    void load()
+    return () => { isActive = false }
+  }, [team])
+
+  const openTasks = tasks.filter((t) => t.cardStatus !== 'done')
+  const overdueCount = tasks.filter((t) => getDueState(t.dueDate).tone === 'late').length
+  const dueSoonCount = tasks.filter((t) => getDueState(t.dueDate).tone === 'soon').length
+  const blockedCount = tasks.filter((t) => t.tags.includes('Blocked')).length
+  const needHelpCount = tasks.filter((t) => t.tags.includes('Need Help')).length
+
+  const workload = openTasks.reduce<Record<string, number>>((acc, t) => {
+    const name = t.assignee || 'Unassigned'
+    acc[name] = (acc[name] ?? 0) + 1
+    return acc
+  }, {})
+  const workloadEntries = Object.entries(workload).sort((a, b) => b[1] - a[1])
+
+  return (
+    <div className="notes-page">
+      <div className="notes-header">
+        <div><p className="eyebrow">PM View</p><h2 className="notes-title">{teamName} Dashboard</h2></div>
+        {isAdmin && (
+          <div className="manager-toggle">
+            {availableTeams.map((t) => (
+              <button key={t.id} className={`manager-toggle-btn ${team === t.id ? 'active' : ''}`}
+                onClick={() => onTeamChange(t.id)}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="dashboard-stats-grid">
+        <div className="dashboard-stat-card">
+          <span className="dashboard-stat-value">{overdueCount}</span>
+          <span className="dashboard-stat-label">Overdue</span>
+        </div>
+        <div className="dashboard-stat-card">
+          <span className="dashboard-stat-value">{dueSoonCount}</span>
+          <span className="dashboard-stat-label">Due soon</span>
+        </div>
+        <div className="dashboard-stat-card">
+          <span className="dashboard-stat-value">{blockedCount}</span>
+          <span className="dashboard-stat-label">Blocked</span>
+        </div>
+        <div className="dashboard-stat-card">
+          <span className="dashboard-stat-value">{needHelpCount}</span>
+          <span className="dashboard-stat-label">Need help</span>
+        </div>
+      </div>
+
+      <section className="scratch-notes">
+        <div className="scratch-notes-header"><div><h3>Workload</h3></div></div>
+        {workloadEntries.length === 0 ? (
+          <p className="no-answers">No open cards.</p>
+        ) : (
+          <ul className="workload-list">
+            {workloadEntries.map(([name, count]) => (
+              <li key={name} className="workload-item">
+                <span>{name}</span>
+                <span className="workload-count">{count}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="scratch-notes">
+        <div className="scratch-notes-header"><div><h3>Recent activity</h3></div></div>
+        {isLoadingActivity ? (
+          <p className="loading-text">Loading activity...</p>
+        ) : activity.length === 0 ? (
+          <p className="no-answers">No activity yet.</p>
+        ) : (
+          <ul className="activity-list">
+            {activity.map((event) => (
+              <li key={event.id} className="activity-item">
+                <span className="activity-text">{formatEventText(event)} on "{event.cardTitle}"</span>
+                <span className="activity-time">{formatRelativeTime(event.createdAt)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  )
+}
+
+// ── AdminPanel ────────────────────────────────────────────────────────────────
+
+function AdminPanel() {
+  const [users, setUsers] = useState<RosterUser[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let isActive = true
+    async function load() {
+      try {
+        const data = await fetchAdminUsers()
+        if (isActive) setUsers(data)
+      } catch (err) {
+        if (isActive) setError(err instanceof Error ? err.message : 'Could not load users.')
+      } finally {
+        if (isActive) setIsLoading(false)
+      }
+    }
+    void load()
+    return () => { isActive = false }
+  }, [])
+
+  async function handleRoleChange(userId: string, role: Role, team: TeamId | null) {
+    setError('')
+    try {
+      const updated = await updateUserRoleTeam(userId, role, team)
+      setUsers((cur) => cur.map((u) => (u.id === userId ? updated : u)))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update user.')
+    }
+  }
+
+  return (
+    <div className="notes-page">
+      <div className="notes-header">
+        <div><p className="eyebrow">Admin</p><h2 className="notes-title">Manage roles</h2></div>
+      </div>
+      {error && <p className="form-error">{error}</p>}
+      {isLoading ? (
+        <p className="loading-text">Loading users...</p>
+      ) : (
+        <div className="admin-table-wrap">
+          <table className="admin-table">
+            <thead>
+              <tr><th>Name</th><th>GitHub</th><th>Role</th><th>Team</th></tr>
+            </thead>
+            <tbody>
+              {users.map((person) => (
+                <tr key={person.id}>
+                  <td>{person.displayName}</td>
+                  <td>@{person.githubLogin}</td>
+                  <td>
+                    <select value={person.role}
+                      onChange={(e) => void handleRoleChange(person.id, e.target.value as Role, person.team)}>
+                      <option value="student">Student</option>
+                      <option value="pm">PM</option>
+                    </select>
+                  </td>
+                  <td>
+                    <select value={person.team ?? ''}
+                      onChange={(e) => void handleRoleChange(person.id, person.role, e.target.value ? (e.target.value as TeamId) : null)}>
+                      <option value="">No team</option>
+                      <option value="team1">Team 1</option>
+                      <option value="team2">Team 2</option>
+                    </select>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -698,7 +992,8 @@ function ManagerNotes({
 // ── App ───────────────────────────────────────────────────────────────────────
 
 function App() {
-  const [tasks, setTasks] = useState<Task[]>(DEMO_TASKS)
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [roster, setRoster] = useState<RosterUser[]>([])
   const [draft, setDraft] = useState<TaskDraft>(INITIAL_DRAFT)
   const [teamNames, setTeamNames] = useState<Record<TeamId, string>>({ team1: 'Team 1', team2: 'Team 2' })
   const [activeTab, setActiveTab] = useState<TabId>('team1')
@@ -708,26 +1003,15 @@ function App() {
   const [error, setError] = useState('')
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [githubConfigured, setGithubConfigured] = useState(true)
+  const [authChecked, setAuthChecked] = useState(false)
+  const [theme, setTheme] = useState<Theme>(getInitialTheme)
+  const [myTasksOnly, setMyTasksOnly] = useState(false)
+  const [dashboardTeam, setDashboardTeam] = useState<TeamId>('team1')
 
   useEffect(() => {
-    let isActive = true
-    async function load() {
-      try {
-        setIsLoading(true); setError('')
-        const [cards, questions] = await Promise.all([fetchCards(), fetchQuestions()])
-        if (isActive) {
-          setTasks(cards)
-          setQnaItems(questions)
-        }
-      } catch (err) {
-        if (isActive) setError(err instanceof Error ? err.message : 'Could not load cards.')
-      } finally {
-        if (isActive) setIsLoading(false)
-      }
-    }
-    void load()
-    return () => { isActive = false }
-  }, [])
+    document.documentElement.setAttribute('data-theme', theme)
+    try { localStorage.setItem('cardboard-theme', theme) } catch { /* ignore */ }
+  }, [theme])
 
   useEffect(() => {
     let isActive = true
@@ -739,15 +1023,42 @@ function App() {
         setGithubConfigured(data.githubConfigured)
       } catch {
         if (isActive) setGithubConfigured(false)
+      } finally {
+        if (isActive) setAuthChecked(true)
       }
     }
     void loadAccount()
     return () => { isActive = false }
   }, [])
 
+  useEffect(() => {
+    if (!authUser) return
+    let isActive = true
+    async function load() {
+      try {
+        setIsLoading(true); setError('')
+        const [cards, questions, users] = await Promise.all([fetchCards(), fetchQuestions(), fetchRoster()])
+        if (isActive) {
+          setTasks(cards)
+          setQnaItems(questions)
+          setRoster(users)
+        }
+      } catch (err) {
+        if (isActive) setError(err instanceof Error ? err.message : 'Could not load cards.')
+      } finally {
+        if (isActive) setIsLoading(false)
+      }
+    }
+    void load()
+    return () => { isActive = false }
+  }, [authUser])
+
   const team1Tasks = tasks.filter((t) => t.team === 'team1')
   const team2Tasks = tasks.filter((t) => t.team === 'team2')
-  const activeTasks = activeTab === 'team1' ? team1Tasks : team2Tasks
+  const rawActiveTasks = activeTab === 'team1' ? team1Tasks : team2Tasks
+  const activeTasks = myTasksOnly
+    ? rawActiveTasks.filter((t) => t.assigneeUserId === authUser?.id)
+    : rawActiveTasks
   const defaultName = authUser?.displayName ?? ''
 
   function updateDraft<K extends keyof TaskDraft>(field: K, value: TaskDraft[K]) {
@@ -771,11 +1082,12 @@ function App() {
       const card = await createCard({
         title,
         description: draft.description.trim(),
-        assignee: defaultName || 'Unassigned',
+        assigneeUserId: null,
         dueDate: draft.dueDate,
         tags,
         team: draft.team,
         cardStatus: 'started',
+        priority: draft.priority,
       })
       setTasks((cur) => [...cur, card])
       setDraft((cur) => ({ ...INITIAL_DRAFT, dueDate: offsetDate(4), team: cur.team }))
@@ -795,11 +1107,12 @@ function App() {
       const card = await updateCard(id, {
         title: merged.title,
         description: merged.description,
-        assignee: merged.assignee,
+        assigneeUserId: merged.assigneeUserId,
         dueDate: merged.dueDate,
         tags: merged.tags,
         team: merged.team,
         cardStatus: merged.cardStatus,
+        priority: merged.priority,
       })
       setTasks((cur) => cur.map((t) => (t.id === id ? card : t)))
     } catch (err) {
@@ -834,11 +1147,31 @@ function App() {
     setAuthUser(user)
   }
 
+  if (!authUser) {
+    return (
+      <div className="app-shell">
+        <div className="signin-wall">
+          <h1>Cardboard</h1>
+          {!authChecked ? (
+            <p className="loading-text">Loading...</p>
+          ) : !githubConfigured ? (
+            <span className="auth-status">GitHub OAuth not configured</span>
+          ) : (
+            <>
+              <p>Sign in with GitHub to view and manage your team's board.</p>
+              <a className="github-login-btn" href="/auth/github/start">Sign in with GitHub</a>
+            </>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  const canSeeDashboard = authUser.isAdmin || (authUser.role === 'pm' && Boolean(authUser.team))
+  const dashboardTeamResolved: TeamId = authUser.isAdmin ? dashboardTeam : (authUser.team ?? 'team1')
+
   return (
     <div className="app-shell">
-      <div className="orb orb-one" aria-hidden="true" />
-      <div className="orb orb-two" aria-hidden="true" />
-
       <div className="page-wrapper">
         <div className="top-bar">
           <nav className="tab-bar">
@@ -848,27 +1181,65 @@ function App() {
                 onRename={(n) => setTeamNames((cur) => ({ ...cur, [tid]: n }))} />
             ))}
             <TabItem label="Q&A" active={activeTab === 'qna'} onClick={() => selectTab('qna')} />
-            <TabItem label="Manager Notes" active={activeTab === 'notes'} onClick={() => selectTab('notes')} />
+            {canSeeDashboard && (
+              <TabItem label="Dashboard" active={activeTab === 'dashboard'} onClick={() => selectTab('dashboard')} />
+            )}
+            {authUser.role === 'pm' && authUser.team && (
+              <TabItem label="PM Notes" active={activeTab === 'notes'} onClick={() => selectTab('notes')} />
+            )}
+            {authUser.isAdmin && (
+              <TabItem label="Admin" active={activeTab === 'admin'} onClick={() => selectTab('admin')} />
+            )}
           </nav>
-          <AccountMenu
-            key={authUser?.id ?? 'signed-out'}
-            user={authUser}
-            githubConfigured={githubConfigured}
-            onLogout={() => void handleLogout()}
-            onUserUpdate={handleUserUpdate}
-          />
+          <div className="top-bar-actions">
+            {(activeTab === 'team1' || activeTab === 'team2') && (
+              <button
+                type="button"
+                className={`tab-btn ${myTasksOnly ? 'active' : ''}`}
+                onClick={() => setMyTasksOnly((v) => !v)}
+              >
+                My Tasks
+              </button>
+            )}
+            <ThemeToggle theme={theme} onToggle={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} />
+            <AccountMenu
+              key={authUser.id}
+              user={authUser}
+              onLogout={() => void handleLogout()}
+              onUserUpdate={handleUserUpdate}
+            />
+          </div>
         </div>
 
-        {activeTab === 'notes' ? (
+        {activeTab === 'notes' && authUser.role === 'pm' && authUser.team ? (
           <div className="notes-wrapper">
-            <ManagerNotes tasks={{ team1: team1Tasks, team2: team2Tasks }} teamNames={teamNames} user={authUser} />
+            <PmNotes
+              tasks={authUser.team === 'team1' ? team1Tasks : team2Tasks}
+              teamName={teamNames[authUser.team]}
+            />
+          </div>
+        ) : activeTab === 'dashboard' && canSeeDashboard ? (
+          <div className="notes-wrapper">
+            <Dashboard
+              key={dashboardTeamResolved}
+              team={dashboardTeamResolved}
+              teamName={teamNames[dashboardTeamResolved]}
+              tasks={dashboardTeamResolved === 'team1' ? team1Tasks : team2Tasks}
+              isAdmin={authUser.isAdmin}
+              availableTeams={[{ id: 'team1', label: teamNames.team1 }, { id: 'team2', label: teamNames.team2 }]}
+              onTeamChange={setDashboardTeam}
+            />
+          </div>
+        ) : activeTab === 'admin' && authUser.isAdmin ? (
+          <div className="notes-wrapper">
+            <AdminPanel />
           </div>
         ) : (
           <main className="app-layout">
             <aside className="composer-panel">
               {activeTab === 'qna' ? (
                 <>
-                  <div className="composer-heading"><h2>Ask away</h2></div>
+                  <div className="composer-heading"><h2>Ask a question</h2></div>
                   <QnaComposer onPost={handleCreateQuestion} defaultName={defaultName} />
                 </>
               ) : (
@@ -887,7 +1258,19 @@ function App() {
                       <input type="date" value={draft.dueDate}
                         onChange={(e) => updateDraft('dueDate', e.target.value)} />
                     </label>
-                    <p className="posting-as">Card owner: {defaultName || 'Anonymous'}</p>
+                    <div className="field"><span>Priority</span>
+                      <div className="section-radio-row">
+                        {PRIORITIES.map((p) => (
+                          <label key={p.id} className={`section-radio-option priority-radio-${p.id} ${draft.priority === p.id ? 'selected' : ''}`}>
+                            <input type="radio" name="draft-priority"
+                              checked={draft.priority === p.id}
+                              onChange={() => updateDraft('priority', p.id)} />
+                            {p.label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="posting-as">Card owner: {defaultName}</p>
                     <div className="field"><span>Status tags</span>
                       <TagToggleRow selected={draft.presetTags}
                         onChange={(tags) => updateDraft('presetTags', tags)} />
@@ -922,6 +1305,7 @@ function App() {
                       tasks={activeTasks.filter((t) => t.cardStatus === s.id)}
                       onUpdate={handleUpdateTask}
                       teamNames={teamNames}
+                      roster={roster}
                     />
                   ))}
                 </div>

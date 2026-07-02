@@ -5,7 +5,9 @@ A classroom project board built with Vite, React, TypeScript, Yarn, and Neon Pos
 ## Features
 
 - Student-friendly card sections for started, flowing, and done work
-- Team tabs, Q&A, and manager notes views
+- Team tabs, Q&A, and PM notes views
+- Real assignees, per-card activity history, and threaded comments tied to a signed-in identity
+- Team-scoped PM role (each team's acting PM only sees their own team's notes)
 - Neon-backed card persistence through a small Node API
 - Classroom-aware database tables for school years, classrooms, students, cards, questions, and answers
 - One active classroom by default, with year-to-year reset handled by creating a new classroom/school-year record
@@ -31,7 +33,7 @@ The server reads `DATABASE_URL` from `.env`, creates the `cardboard_*` tables if
 
 ## GitHub login
 
-Create a GitHub OAuth App and add these values to `.env`:
+GitHub sign-in is required to use the app — there is no anonymous mode. Create a GitHub OAuth App and add these values to `.env`:
 
 ```bash
 GITHUB_CLIENT_ID=...
@@ -40,6 +42,16 @@ GITHUB_CLIENT_SECRET=...
 
 For local development, set the GitHub OAuth callback URL to the URL printed by `npm run dev` plus `/auth/github/callback`.
 For example: `http://localhost:5174/auth/github/callback`.
+
+## Roles and admins
+
+Every user starts as a `student`. Two admins (identified by GitHub login, not stored in the database) can promote a user to `pm` for a specific team from the in-app Admin tab:
+
+```bash
+ADMIN_GITHUB_LOGINS=your-github-login,instructor-github-login
+```
+
+A PM only ever sees and edits their own team's PM notes — this is enforced server-side, not just hidden in the UI.
 
 ## Slack notifications
 
