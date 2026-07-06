@@ -549,8 +549,9 @@ async function createCard(body, user) {
   const title = normalizeText(body.title)
   if (!title) throw new HttpError(400, 'Title is required.')
 
-  // The create form has no assignee picker (M1 scope) — always default to the creator.
-  const assigneeUserId = body.assigneeUserId ? await resolveAssigneeUserId(body.assigneeUserId) : user.id
+  // The create form sends the picker's choice (a user id, or null for Unassigned);
+  // a request without the key at all still defaults to the creator.
+  const assigneeUserId = 'assigneeUserId' in body ? await resolveAssigneeUserId(body.assigneeUserId) : user.id
   const [assignee] = await sql`select display_name from cardboard_users where id = ${assigneeUserId} limit 1`
 
   const [created] = await sql`

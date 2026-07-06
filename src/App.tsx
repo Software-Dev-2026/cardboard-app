@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { FormEvent, KeyboardEvent } from 'react'
+import type { DragEvent, FormEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import './App.css'
 import {
   createAnswer, createCard, createCardComment, createQuestion, fetchAdminUsers, fetchCardComments,
@@ -11,13 +11,13 @@ import type {
   CardComment, CardEvent, CardStatus, Priority, QnaQuestion, Role, RosterUser, TabId, Task, TeamActivityEvent, TeamId,
 } from './types'
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const PRESET_TAGS = ['Blocked', 'Need Help'] as const
 
 const CARD_STATUSES: Array<{ id: CardStatus; label: string; shortLabel: string }> = [
-  { id: 'started', label: 'Not Started', shortLabel: 'Not Started' },
-  { id: 'flowing', label: 'In Progress', shortLabel: 'In Progress' },
+  { id: 'started', label: 'To do',       shortLabel: 'To do'       },
+  { id: 'flowing', label: 'In progress', shortLabel: 'In progress' },
   { id: 'done',    label: 'Done',        shortLabel: 'Done'        },
 ]
 
@@ -37,38 +37,17 @@ function getInitialTheme(): Theme {
   return 'light'
 }
 
-interface EditState {
-  title: string
-  description: string
-  dueDate: string
-  presetTags: string[]
-  team: TeamId
-  cardStatus: CardStatus
-  assigneeUserId: string | null
-  priority: Priority
-}
-
 interface TaskDraft {
   title: string
   description: string
   dueDate: string
   presetTags: string[]
   team: TeamId
+  assigneeUserId: string | null
   priority: Priority
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
 const TODAY = new Date()
-
-const INITIAL_DRAFT: TaskDraft = {
-  title: '',
-  description: '',
-  dueDate: offsetDate(4),
-  presetTags: [],
-  team: 'team1',
-  priority: 'medium',
-}
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
@@ -80,22 +59,12 @@ function visibleTags(tags: string[]): string[] {
   return tags.filter((tag) => (PRESET_TAGS as readonly string[]).includes(tag))
 }
 
-function taskToEditState(task: Task): EditState {
-  const preset = PRESET_TAGS as readonly string[]
-  return {
-    title: task.title,
-    description: task.description,
-    dueDate: task.dueDate,
-    presetTags: task.tags.filter((t) => preset.includes(t)),
-    team: task.team,
-    cardStatus: task.cardStatus,
-    assigneeUserId: task.assigneeUserId,
-    priority: task.priority,
-  }
-}
-
 function statusLabel(status: string | null): string {
   return CARD_STATUSES.find((s) => s.id === status)?.shortLabel ?? status ?? 'Unknown'
+}
+
+function priorityLabel(priority: string | null): string {
+  return PRIORITIES.find((p) => p.id === priority)?.label ?? priority ?? 'Unknown'
 }
 
 function formatEventText(event: CardEvent): string {
@@ -113,10 +82,6 @@ function formatEventText(event: CardEvent): string {
   }
 }
 
-function priorityLabel(priority: string | null): string {
-  return PRIORITIES.find((p) => p.id === priority)?.label ?? priority ?? 'Unknown'
-}
-
 function formatRelativeTime(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime()
   const minutes = Math.round(diffMs / 60000)
@@ -129,42 +94,44 @@ function formatRelativeTime(iso: string): string {
   return formatShortDate(iso.slice(0, 10))
 }
 
-// ── TabItem ───────────────────────────────────────────────────────────────────
+function offsetDate(days: number) {
+  const d = new Date(TODAY)
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
 
-function TabItem({
-  label, active, onClick, onRename,
-}: {
-  label: string; active: boolean; onClick: () => void; onRename?: (n: string) => void
-}) {
-  const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState(label)
-  const inputRef = useRef<HTMLInputElement>(null)
+function formatShortDate(date: string) {
+  if (!date) return 'No date'
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(
+    new Date(`${date}T12:00:00`),
+  )
+}
 
-  function startEdit(e: React.MouseEvent) {
-    e.stopPropagation(); setValue(label); setEditing(true)
-    setTimeout(() => inputRef.current?.select(), 0)
-  }
-  function commit() {
-    const t = value.trim(); if (t && onRename) onRename(t); setEditing(false)
-  }
-  function handleKey(e: KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Enter') commit()
-    if (e.key === 'Escape') setEditing(false)
-  }
+function getDueState(date: string): { label: string; tone: 'calm' | 'soon' | 'late' } {
+  if (!date) return { label: 'No due date', tone: 'calm' }
+  const due = new Date(`${date}T12:00:00`)
+  const d = Math.ceil((due.getTime() - TODAY.getTime()) / 86400000)
+  if (d < 0)  return { label: `${Math.abs(d)}d late`, tone: 'late' }
+  if (d <= 2) return { label: d === 0 ? 'Due today' : `${d}d left`, tone: 'soon' }
+  return { label: formatShortDate(date), tone: 'calm' }
+}
 
-  if (editing) {
-    return (
-      <div className="tab-btn active tab-btn-editing">
-        <input ref={inputRef} className="tab-name-input" value={value}
-          onChange={(e) => setValue(e.target.value)} onBlur={commit} onKeyDown={handleKey} autoFocus />
-      </div>
-    )
-  }
+function initialOf(name: string): string {
+  return (name.trim().slice(0, 1) || '?').toUpperCase()
+}
+
+// ── Wordmark ──────────────────────────────────────────────────────────────────
+// The corrugation flutes — the inside of a piece of cardboard — as the mark.
+
+function Wordmark({ compact = false }: { compact?: boolean }) {
   return (
-    <button className={`tab-btn ${active ? 'active' : ''}`} onClick={onClick}>
-      {label}
-      {active && onRename && <span className="tab-edit-icon" onClick={startEdit} title="Rename">✎</span>}
-    </button>
+    <span className={`wordmark ${compact ? 'wordmark-compact' : ''}`}>
+      <svg className="wordmark-flutes" viewBox="0 0 26 18" width="26" height="18" aria-hidden="true">
+        <path d="M1 5 Q4.25 1 7.5 5 T14 5 T20.5 5 T27 5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M1 12 Q4.25 8 7.5 12 T14 12 T20.5 12 T27 12" fill="none" stroke="currentColor" strokeWidth="1.8" opacity="0.55" />
+      </svg>
+      <span className="wordmark-text">Cardboard</span>
+    </span>
   )
 }
 
@@ -174,18 +141,18 @@ function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }
   return (
     <button
       type="button"
-      className="theme-toggle"
+      className="icon-btn"
       onClick={onToggle}
       aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
       title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
     >
       {theme === 'dark' ? (
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="4" />
           <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
         </svg>
       ) : (
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" />
         </svg>
       )}
@@ -193,29 +160,116 @@ function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }
   )
 }
 
-// ── AccountMenu ───────────────────────────────────────────────────────────────
+// ── Sidebar nav items ─────────────────────────────────────────────────────────
+
+function NavIcon({ kind }: { kind: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin' }) {
+  const common = {
+    width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none' as const,
+    stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
+    'aria-hidden': true as const,
+  }
+  switch (kind) {
+    case 'board':
+      return <svg {...common}><rect x="3" y="3" width="7" height="18" rx="1.5" /><rect x="14" y="3" width="7" height="12" rx="1.5" /></svg>
+    case 'qna':
+      return <svg {...common}><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+    case 'dashboard':
+      return <svg {...common}><path d="M12 20V10M18 20V4M6 20v-4" /></svg>
+    case 'notes':
+      return <svg {...common}><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+    case 'admin':
+      return <svg {...common}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+  }
+}
+
+function NavItem({
+  icon, label, active, onClick, badge,
+}: {
+  icon: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin'
+  label: string
+  active: boolean
+  onClick: () => void
+  badge?: string
+}) {
+  return (
+    <button type="button" className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>
+      <NavIcon kind={icon} />
+      <span className="nav-item-label">{label}</span>
+      {badge !== undefined && <span className="nav-item-badge">{badge}</span>}
+    </button>
+  )
+}
+
+// A team board link that supports renaming its label in place (client-side only).
+function TeamNavItem({
+  label, active, count, onClick, onRename,
+}: {
+  label: string; active: boolean; count: number; onClick: () => void; onRename: (n: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(label)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  function startEdit(e: MouseEvent) {
+    e.stopPropagation(); setValue(label); setEditing(true)
+    setTimeout(() => inputRef.current?.select(), 0)
+  }
+  function commit() {
+    const t = value.trim(); if (t) onRename(t); setEditing(false)
+  }
+  function handleKey(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') commit()
+    if (e.key === 'Escape') setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div className="nav-item active nav-item-editing">
+        <NavIcon kind="board" />
+        <input ref={inputRef} className="nav-rename-input" value={value}
+          onChange={(e) => setValue(e.target.value)} onBlur={commit} onKeyDown={handleKey} autoFocus />
+      </div>
+    )
+  }
+  return (
+    <button type="button" className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>
+      <NavIcon kind="board" />
+      <span className="nav-item-label">{label}</span>
+      {active && (
+        <span className="nav-rename-icon" onClick={startEdit} title="Rename board" role="button">✎</span>
+      )}
+      <span className="nav-item-badge">{count}</span>
+    </button>
+  )
+}
+
+// ── SidebarUser ───────────────────────────────────────────────────────────────
 // Only rendered once a user is signed in — the app-level sign-in wall handles
 // the logged-out state, so this component can assume `user` is real.
 
-function AccountMenu({
-  user, onLogout, onUserUpdate,
+function SidebarUser({
+  user, teamNames, onLogout, onUserUpdate,
 }: {
   user: AuthUser
+  teamNames: Record<TeamId, string>
   onLogout: () => void
   onUserUpdate: (user: AuthUser) => void
 }) {
+  const [open, setOpen] = useState(false)
   const [nameValue, setNameValue] = useState(user.displayName)
-  const [isSavingName, setIsSavingName] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
   const [nameError, setNameError] = useState('')
+
+  const roleChip = user.isAdmin
+    ? 'Admin'
+    : user.role === 'pm'
+      ? `PM · ${user.team ? teamNames[user.team] : 'No team'}`
+      : 'Student'
 
   async function saveDefaultName() {
     const displayName = nameValue.trim()
-    if (!displayName) {
-      setNameError('Required')
-      return
-    }
-
-    setIsSavingName(true)
+    if (!displayName) { setNameError('Required'); return }
+    setIsSaving(true)
     setNameError('')
     try {
       const updated = await updateDefaultName(displayName)
@@ -223,54 +277,70 @@ function AccountMenu({
     } catch (err) {
       setNameError(err instanceof Error ? err.message : 'Could not save')
     } finally {
-      setIsSavingName(false)
+      setIsSaving(false)
     }
   }
 
   return (
-    <div className="account-menu">
-      {user.avatarUrl && <img src={user.avatarUrl} alt="" className="account-avatar" />}
-      <div className="account-copy">
-        <label className="default-name-field">
-          <span>Default name</span>
-          <input
-            type="text"
-            value={nameValue}
-            onChange={(e) => setNameValue(e.target.value)}
-            onBlur={() => { if (nameValue.trim() !== user.displayName) void saveDefaultName() }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') e.currentTarget.blur()
-              if (e.key === 'Escape') setNameValue(user.displayName)
-            }}
-          />
-        </label>
-        <span className="account-handle">@{user.githubLogin}</span>
-        {nameError && <span className="account-error">{nameError}</span>}
-      </div>
+    <div className="side-user">
+      {open && (
+        <div className="side-user-menu">
+          <label className="field">
+            <span>Display name</span>
+            <input
+              type="text"
+              value={nameValue}
+              onChange={(e) => setNameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void saveDefaultName()
+                if (e.key === 'Escape') setNameValue(user.displayName)
+              }}
+            />
+          </label>
+          {nameError && <p className="form-error">{nameError}</p>}
+          <div className="side-user-menu-actions">
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => void saveDefaultName()}
+              disabled={isSaving || !nameValue.trim() || nameValue.trim() === user.displayName}
+            >
+              {isSaving ? 'Saving…' : 'Save name'}
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onLogout}>Log out</button>
+          </div>
+        </div>
+      )}
       <button
-        className="save-name-btn"
         type="button"
-        onClick={() => void saveDefaultName()}
-        disabled={isSavingName || !nameValue.trim() || nameValue.trim() === user.displayName}
+        className={`side-user-row ${open ? 'open' : ''}`}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
       >
-        {isSavingName ? 'Saving' : 'Save'}
+        {user.avatarUrl
+          ? <img src={user.avatarUrl} alt="" className="avatar avatar-img" />
+          : <span className="avatar">{initialOf(user.displayName)}</span>}
+        <span className="side-user-copy">
+          <span className="side-user-name">{user.displayName}</span>
+          <span className="side-user-role">{roleChip}</span>
+        </span>
+        <span className="side-user-caret" aria-hidden="true">{open ? '▾' : '▴'}</span>
       </button>
-      <button className="logout-btn" type="button" onClick={onLogout}>Log out</button>
     </div>
   )
 }
 
-// ── TagToggleRow ──────────────────────────────────────────────────────────────
+// ── Form bits ─────────────────────────────────────────────────────────────────
 
 function TagToggleRow({ selected, onChange }: { selected: string[]; onChange: (t: string[]) => void }) {
   function toggle(tag: string) {
     onChange(selected.includes(tag) ? selected.filter((t) => t !== tag) : [...selected, tag])
   }
   return (
-    <div className="preset-tag-row">
+    <div className="tag-toggle-row">
       {PRESET_TAGS.map((tag) => (
         <button key={tag} type="button"
-          className={`preset-tag-btn preset-tag-${tag.toLowerCase().replace(' ', '-')} ${selected.includes(tag) ? 'active' : ''}`}
+          className={`tag-chip tag-${tag.toLowerCase().replace(' ', '-')} ${selected.includes(tag) ? 'active' : ''}`}
           onClick={() => toggle(tag)}>
           {tag}
         </button>
@@ -279,32 +349,42 @@ function TagToggleRow({ selected, onChange }: { selected: string[]; onChange: (t
   )
 }
 
-// ── StageSelector ─────────────────────────────────────────────────────────────
-
-function StageSelector({ status, onChange }: { status: CardStatus; onChange: (s: CardStatus) => void }) {
-  const currentIndex = CARD_STATUSES.findIndex((s) => s.id === status)
+function PriorityPicker({ value, onChange, name }: { value: Priority; onChange: (p: Priority) => void; name: string }) {
   return (
-    <div className="stage-selector">
-      {CARD_STATUSES.map((stage, i) => (
-        <span key={stage.id} className="stage-segment">
-          <button
-            type="button"
-            className={`stage-dot ${i < currentIndex ? 'past' : ''} ${i === currentIndex ? 'current' : ''}`}
-            onClick={() => onChange(stage.id)}
-            title={`Move to: ${stage.label}`}
-          />
-          {i < CARD_STATUSES.length - 1 && (
-            <span className={`stage-line ${i < currentIndex ? 'filled' : ''}`} />
-          )}
-        </span>
+    <div className="segmented">
+      {PRIORITIES.map((p) => (
+        <label key={p.id} className={`segment priority-segment-${p.id} ${value === p.id ? 'selected' : ''}`}>
+          <input type="radio" name={name} checked={value === p.id} onChange={() => onChange(p.id)} />
+          {p.label}
+        </label>
       ))}
+    </div>
+  )
+}
+
+// ── Modal shell ───────────────────────────────────────────────────────────────
+
+function ModalShell({ onClose, wide, children }: { onClose: () => void; wide?: boolean; children: ReactNode }) {
+  useEffect(() => {
+    function onKey(e: globalThis.KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true">
+        {children}
+      </div>
     </div>
   )
 }
 
 // ── CardActivity ──────────────────────────────────────────────────────────────
 
-function CardActivity({ cardId }: { cardId: Task['id'] }) {
+function CardActivity({ cardId, refreshToken }: { cardId: Task['id']; refreshToken: number }) {
   const [events, setEvents] = useState<CardEvent[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
@@ -320,10 +400,10 @@ function CardActivity({ cardId }: { cardId: Task['id'] }) {
     }
     void load()
     return () => { isActive = false }
-  }, [cardId])
+  }, [cardId, refreshToken])
 
-  if (isLoading) return <p className="loading-text">Loading activity...</p>
-  if (events.length === 0) return <p className="no-answers">No activity yet.</p>
+  if (isLoading) return <p className="quiet-text">Loading activity…</p>
+  if (events.length === 0) return <p className="quiet-text">No activity yet.</p>
 
   return (
     <ul className="activity-list">
@@ -372,32 +452,36 @@ function CardComments({ cardId }: { cardId: Task['id'] }) {
   }
 
   return (
-    <div className="card-comments">
+    <div className="comments-block">
       {isLoading ? (
-        <p className="loading-text">Loading comments...</p>
+        <p className="quiet-text">Loading comments…</p>
       ) : comments.length === 0 ? (
-        <p className="no-answers">No comments yet.</p>
+        <p className="quiet-text">No comments yet — start the thread.</p>
       ) : (
-        <ul className="answers-list">
+        <ul className="comment-list">
           {comments.map((comment) => (
-            <li key={comment.id} className="answer-item">
-              <span className="qna-a-badge">{comment.authorName.slice(0, 1).toUpperCase()}</span>
-              <div className="answer-content">
-                <p>{comment.body}</p>
-                <span className="answer-author">{comment.authorName} · {formatRelativeTime(comment.createdAt)}</span>
+            <li key={comment.id} className="comment-item">
+              {comment.authorAvatarUrl
+                ? <img src={comment.authorAvatarUrl} alt="" className="avatar avatar-img" />
+                : <span className="avatar">{initialOf(comment.authorName)}</span>}
+              <div className="comment-body">
+                <p className="comment-meta">
+                  <span className="comment-author">{comment.authorName}</span>
+                  <span className="comment-time">{formatRelativeTime(comment.createdAt)}</span>
+                </p>
+                <p className="comment-text">{comment.body}</p>
               </div>
             </li>
           ))}
         </ul>
       )}
-      <div className="add-answer-form">
-        <textarea className="feedback-textarea" placeholder="Write a comment..." value={draftText} rows={2}
+      <div className="comment-composer">
+        <textarea placeholder="Write a comment…" value={draftText} rows={2}
           onChange={(e) => setDraftText(e.target.value)} />
-        <div className="answer-form-footer">
-          <button className="action-btn-save" onClick={() => void submitComment()} disabled={!draftText.trim() || isSubmitting}>
-            {isSubmitting ? 'Posting...' : 'Comment'}
-          </button>
-        </div>
+        <button type="button" className="btn btn-primary btn-sm"
+          onClick={() => void submitComment()} disabled={!draftText.trim() || isSubmitting}>
+          {isSubmitting ? 'Posting…' : 'Comment'}
+        </button>
       </div>
     </div>
   )
@@ -406,197 +490,318 @@ function CardComments({ cardId }: { cardId: Task['id'] }) {
 // ── TaskCard ──────────────────────────────────────────────────────────────────
 
 function TaskCard({
-  task, index, onUpdate, teamNames, roster,
+  task, index, onOpen,
 }: {
-  task: Task; index: number
-  onUpdate: (id: Task['id'], updated: Partial<Task>) => void
-  teamNames: Record<TeamId, string>
-  roster: RosterUser[]
+  task: Task; index: number; onOpen: (id: Task['id']) => void
 }) {
-  const [editing, setEditing] = useState(false)
-  const [editState, setEditState] = useState<EditState>(() => taskToEditState(task))
-  const [detailsOpen, setDetailsOpen] = useState(false)
-
   const dueState = getDueState(task.dueDate)
   const shownTags = visibleTags(task.tags)
 
-  function startEdit() { setEditState(taskToEditState(task)); setEditing(true) }
-
-  function saveEdit() {
-    const title = editState.title.trim(); if (!title) return
-    onUpdate(task.id, {
-      title,
-      description: editState.description.trim(),
-      assigneeUserId: editState.assigneeUserId,
-      dueDate: editState.dueDate,
-      tags: buildTags(editState.presetTags),
-      team: editState.team,
-      cardStatus: editState.cardStatus,
-      priority: editState.priority,
-    })
-    setEditing(false)
+  function handleDragStart(e: DragEvent<HTMLElement>) {
+    e.dataTransfer.setData('text/plain', String(task.id))
+    e.dataTransfer.effectAllowed = 'move'
   }
 
-  function updateEdit<K extends keyof EditState>(field: K, value: EditState[K]) {
-    setEditState((cur) => ({ ...cur, [field]: value }))
+  return (
+    <article
+      className="card"
+      style={{ animationDelay: `${Math.min(index, 8) * 30}ms` }}
+      draggable
+      onDragStart={handleDragStart}
+      onClick={() => onOpen(task.id)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(task.id) } }}
+      role="button"
+      tabIndex={0}
+    >
+      <div className="card-top">
+        <span className={`priority-badge priority-${task.priority}`}>{priorityLabel(task.priority)}</span>
+        {shownTags.map((tag) => (
+          <span key={tag} className={`tag-chip tag-${tag.toLowerCase().replace(' ', '-')} active static`}>{tag}</span>
+        ))}
+      </div>
+      <h3 className="card-title">{task.title}</h3>
+      {task.description && <p className="card-desc">{task.description}</p>}
+      <div className="card-meta">
+        <span className="avatar avatar-sm" title={task.assignee}>{initialOf(task.assignee)}</span>
+        <span className="card-assignee">{task.assignee}</span>
+        <span className={`due-chip due-${dueState.tone}`}>{dueState.label}</span>
+      </div>
+    </article>
+  )
+}
+
+// ── BoardColumn ───────────────────────────────────────────────────────────────
+
+function BoardColumn({
+  sectionId, label, tasks, onOpen, onDropCard,
+}: {
+  sectionId: CardStatus; label: string; tasks: Task[]
+  onOpen: (id: Task['id']) => void
+  onDropCard: (id: string, status: CardStatus) => void
+}) {
+  const [isOver, setIsOver] = useState(false)
+
+  function handleDrop(e: DragEvent<HTMLElement>) {
+    e.preventDefault()
+    setIsOver(false)
+    const id = e.dataTransfer.getData('text/plain')
+    if (id) onDropCard(id, sectionId)
   }
 
-  if (editing) {
-    return (
-      <article className="task-card task-card-editing" style={{ animationDelay: `${index * 50}ms` }}>
-        <div className="edit-form">
-          <label className="field">
-            <span>Title</span>
-            <input type="text" value={editState.title} autoFocus
-              onChange={(e) => updateEdit('title', e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Description</span>
-            <textarea value={editState.description} rows={3}
-              onChange={(e) => updateEdit('description', e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Due date</span>
-            <input type="date" value={editState.dueDate}
-              onChange={(e) => updateEdit('dueDate', e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Assignee</span>
-            <select value={editState.assigneeUserId ?? ''}
-              onChange={(e) => updateEdit('assigneeUserId', e.target.value || null)}>
+  return (
+    <section
+      className={`board-col ${isOver ? 'drag-over' : ''}`}
+      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setIsOver(true) }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) setIsOver(false) }}
+      onDrop={handleDrop}
+    >
+      <header className="col-head">
+        <span className={`col-dot col-dot-${sectionId}`} />
+        <span className="col-name">{label}</span>
+        <span className="col-count">{String(tasks.length).padStart(2, '0')}</span>
+      </header>
+      <div className="col-cards">
+        {tasks.length === 0 ? (
+          <p className="col-empty">No cards — drag one here</p>
+        ) : (
+          tasks.map((task, i) => (
+            <TaskCard key={task.id} task={task} index={i} onOpen={onOpen} />
+          ))
+        )}
+      </div>
+    </section>
+  )
+}
+
+// ── CardDetailModal ───────────────────────────────────────────────────────────
+// Property changes commit immediately (like any modern tracker); title and
+// description commit on blur so typing isn't a request per keystroke.
+
+function CardDetailModal({
+  task, roster, teamNames, onUpdate, onClose,
+}: {
+  task: Task
+  roster: RosterUser[]
+  teamNames: Record<TeamId, string>
+  onUpdate: (id: Task['id'], updated: Partial<Task>) => Promise<void>
+  onClose: () => void
+}) {
+  const [title, setTitle] = useState(task.title)
+  const [description, setDescription] = useState(task.description)
+  const [refreshToken, setRefreshToken] = useState(0)
+
+  function commit(updated: Partial<Task>) {
+    void onUpdate(task.id, updated).then(() => setRefreshToken((t) => t + 1))
+  }
+
+  function commitTitle() {
+    const t = title.trim()
+    if (!t) { setTitle(task.title); return }
+    if (t !== task.title) commit({ title: t })
+  }
+
+  function commitDescription() {
+    const d = description.trim()
+    if (d !== task.description) commit({ description: d })
+  }
+
+  return (
+    <ModalShell onClose={onClose} wide>
+      <header className="modal-head">
+        <span className="modal-eyebrow">{teamNames[task.team]} · {statusLabel(task.cardStatus)}</span>
+        <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
+      </header>
+      <div className="card-modal-grid">
+        <div className="card-modal-main">
+          <input
+            className="detail-title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+            aria-label="Card title"
+          />
+          <textarea
+            className="detail-desc"
+            value={description}
+            placeholder="Add a description…"
+            rows={3}
+            onChange={(e) => setDescription(e.target.value)}
+            onBlur={commitDescription}
+            aria-label="Card description"
+          />
+          <section className="detail-section">
+            <h4 className="section-label">Comments</h4>
+            <CardComments cardId={task.id} />
+          </section>
+          <section className="detail-section">
+            <h4 className="section-label">Activity</h4>
+            <CardActivity cardId={task.id} refreshToken={refreshToken} />
+          </section>
+        </div>
+        <aside className="card-modal-props">
+          <div className="prop">
+            <span className="prop-label">Status</span>
+            <select value={task.cardStatus} onChange={(e) => commit({ cardStatus: e.target.value as CardStatus })}>
+              {CARD_STATUSES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+            </select>
+          </div>
+          <div className="prop">
+            <span className="prop-label">Priority</span>
+            <PriorityPicker name={`detail-priority-${task.id}`} value={task.priority}
+              onChange={(p) => commit({ priority: p })} />
+          </div>
+          <div className="prop">
+            <span className="prop-label">Assignee</span>
+            <select value={task.assigneeUserId ?? ''}
+              onChange={(e) => commit({ assigneeUserId: e.target.value || null })}>
               <option value="">Unassigned</option>
               {roster.map((person) => (
                 <option key={person.id} value={person.id}>{person.displayName}</option>
               ))}
             </select>
-          </label>
-          <div className="field">
-            <span>Status tags</span>
-            <TagToggleRow selected={editState.presetTags}
-              onChange={(tags) => updateEdit('presetTags', tags)} />
           </div>
-          <div className="field">
-            <span>Section</span>
-            <div className="section-radio-row">
-              {CARD_STATUSES.map((s) => (
-                <label key={s.id} className={`section-radio-option section-radio-${s.id} ${editState.cardStatus === s.id ? 'selected' : ''}`}>
-                  <input type="radio" name={`edit-status-${task.id}`}
-                    checked={editState.cardStatus === s.id}
-                    onChange={() => updateEdit('cardStatus', s.id)} />
-                  {s.shortLabel}
-                </label>
-              ))}
-            </div>
+          <div className="prop">
+            <span className="prop-label">Due date</span>
+            <input type="date" value={task.dueDate} onChange={(e) => commit({ dueDate: e.target.value })} />
           </div>
-          <div className="field">
-            <span>Priority</span>
-            <div className="section-radio-row">
-              {PRIORITIES.map((p) => (
-                <label key={p.id} className={`section-radio-option priority-radio-${p.id} ${editState.priority === p.id ? 'selected' : ''}`}>
-                  <input type="radio" name={`edit-priority-${task.id}`}
-                    checked={editState.priority === p.id}
-                    onChange={() => updateEdit('priority', p.id)} />
-                  {p.label}
-                </label>
-              ))}
-            </div>
+          <div className="prop">
+            <span className="prop-label">Team</span>
+            <select value={task.team} onChange={(e) => commit({ team: e.target.value as TeamId })}>
+              <option value="team1">{teamNames.team1}</option>
+              <option value="team2">{teamNames.team2}</option>
+            </select>
           </div>
-          <div className="field">
-            <span>Team</span>
-            <div className="team-picker">
-              {(['team1', 'team2'] as TeamId[]).map((tid) => (
-                <label key={tid} className={`team-option ${editState.team === tid ? 'selected' : ''}`}>
-                  <input type="radio" name={`edit-team-${task.id}`}
-                    checked={editState.team === tid} onChange={() => updateEdit('team', tid)} />
-                  {teamNames[tid]}
-                </label>
-              ))}
-            </div>
+          <div className="prop">
+            <span className="prop-label">Labels</span>
+            <TagToggleRow selected={visibleTags(task.tags)}
+              onChange={(tags) => commit({ tags: buildTags(tags) })} />
           </div>
-          <div className="edit-actions">
-            <button type="button" className="action-btn-cancel" onClick={() => setEditing(false)}>Cancel</button>
-            <button type="button" className="action-btn-save" onClick={saveEdit} disabled={!editState.title.trim()}>Save</button>
-          </div>
-        </div>
-      </article>
-    )
+        </aside>
+      </div>
+    </ModalShell>
+  )
+}
+
+// ── NewCardModal ──────────────────────────────────────────────────────────────
+
+function NewCardModal({
+  defaultTeam, defaultAssigneeId, roster, teamNames, onCreate, onClose,
+}: {
+  defaultTeam: TeamId
+  defaultAssigneeId: string | null
+  roster: RosterUser[]
+  teamNames: Record<TeamId, string>
+  onCreate: (draft: TaskDraft) => Promise<boolean>
+  onClose: () => void
+}) {
+  const [draft, setDraft] = useState<TaskDraft>({
+    title: '',
+    description: '',
+    dueDate: offsetDate(4),
+    presetTags: [],
+    team: defaultTeam,
+    assigneeUserId: defaultAssigneeId,
+    priority: 'medium',
+  })
+  const [isSaving, setIsSaving] = useState(false)
+
+  function update<K extends keyof TaskDraft>(field: K, value: TaskDraft[K]) {
+    setDraft((cur) => ({ ...cur, [field]: value }))
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    if (!draft.title.trim() || isSaving) return
+    setIsSaving(true)
+    const ok = await onCreate(draft)
+    setIsSaving(false)
+    if (ok) onClose()
   }
 
   return (
-    <article className={`task-card card-status-${task.cardStatus}`} style={{ animationDelay: `${index * 50}ms` }}>
-      <div className="task-due-row">
-        <StageSelector status={task.cardStatus} onChange={(s) => onUpdate(task.id, { cardStatus: s })} />
-        <div className="task-due-actions">
-          <span className={`priority-badge priority-${task.priority}`}>{priorityLabel(task.priority)}</span>
-          <span className={`due-pill due-${dueState.tone}`}>{dueState.label}</span>
-          <button className="edit-card-btn" onClick={startEdit}>Edit</button>
+    <ModalShell onClose={onClose}>
+      <header className="modal-head">
+        <span className="modal-eyebrow">New card · {teamNames[draft.team]}</span>
+        <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
+      </header>
+      <form className="new-card-form" onSubmit={(e) => void handleSubmit(e)}>
+        <input
+          className="detail-title"
+          placeholder="Card title"
+          value={draft.title}
+          onChange={(e) => update('title', e.target.value)}
+          autoFocus
+        />
+        <textarea
+          className="detail-desc"
+          placeholder="What needs to happen?"
+          value={draft.description}
+          rows={3}
+          onChange={(e) => update('description', e.target.value)}
+        />
+        <div className="new-card-props">
+          <div className="prop">
+            <span className="prop-label">Assignee</span>
+            <select value={draft.assigneeUserId ?? ''}
+              onChange={(e) => update('assigneeUserId', e.target.value || null)}>
+              <option value="">Unassigned</option>
+              {roster.map((person) => (
+                <option key={person.id} value={person.id}>{person.displayName}</option>
+              ))}
+            </select>
+          </div>
+          <div className="prop">
+            <span className="prop-label">Due date</span>
+            <input type="date" value={draft.dueDate} onChange={(e) => update('dueDate', e.target.value)} />
+          </div>
+          <div className="prop">
+            <span className="prop-label">Team</span>
+            <select value={draft.team} onChange={(e) => update('team', e.target.value as TeamId)}>
+              <option value="team1">{teamNames.team1}</option>
+              <option value="team2">{teamNames.team2}</option>
+            </select>
+          </div>
+          <div className="prop">
+            <span className="prop-label">Priority</span>
+            <PriorityPicker name="new-card-priority" value={draft.priority}
+              onChange={(p) => update('priority', p)} />
+          </div>
+          <div className="prop">
+            <span className="prop-label">Labels</span>
+            <TagToggleRow selected={draft.presetTags} onChange={(tags) => update('presetTags', tags)} />
+          </div>
         </div>
-      </div>
-
-      <h4 className="task-title">{task.title}</h4>
-      {task.description && <p className="task-desc">{task.description}</p>}
-
-      {shownTags.length > 0 && (
-        <div className="tag-row">
-          {shownTags.map((tag) => (
-            <span key={tag}
-              className={`tag-pill ${tag === 'Blocked' ? 'tag-blocked' : tag === 'Need Help' ? 'tag-need-help' : ''}`}>
-              {tag}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="task-footer">
-        <span>{task.assignee}</span>
-        <span>{formatShortDate(task.dueDate)}</span>
-      </div>
-
-      <button className="feedback-btn" onClick={() => setDetailsOpen((v) => !v)}>
-        {detailsOpen ? 'Hide comments & activity' : 'Comments & activity'}
-      </button>
-
-      {detailsOpen && (
-        <div className="card-details-body">
-          <CardActivity cardId={task.id} />
-          <CardComments cardId={task.id} />
-        </div>
-      )}
-    </article>
+        <footer className="modal-actions">
+          <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={!draft.title.trim() || isSaving}>
+            {isSaving ? 'Creating…' : 'Create card'}
+          </button>
+        </footer>
+      </form>
+    </ModalShell>
   )
 }
 
-// ── SectionColumn ─────────────────────────────────────────────────────────────
+// ── Q&A ───────────────────────────────────────────────────────────────────────
 
-function SectionColumn({
-  sectionId, label, tasks, onUpdate, teamNames, roster,
-}: {
-  sectionId: CardStatus; label: string; tasks: Task[]
-  onUpdate: (id: Task['id'], updated: Partial<Task>) => void
-  teamNames: Record<TeamId, string>
-  roster: RosterUser[]
-}) {
+function QnaComposer({ onPost, defaultName }: { onPost: (question: string) => Promise<void>; defaultName: string }) {
+  const [question, setQuestion] = useState('')
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault(); const q = question.trim(); if (!q) return
+    void onPost(q).then(() => setQuestion(''))
+  }
   return (
-    <div className={`section-col section-col-${sectionId}`}>
-      <div className="section-col-header">
-        <span className={`section-dot section-dot-${sectionId}`} />
-        <span className="section-label">{label}</span>
-        <span className="section-count">{tasks.length}</span>
+    <form className="qna-composer" onSubmit={handleSubmit}>
+      <textarea placeholder="What do you need to know?" value={question} rows={2}
+        onChange={(e) => setQuestion(e.target.value)} />
+      <div className="qna-composer-foot">
+        <span className="posting-as">Posting as {defaultName}</span>
+        <button className="btn btn-primary btn-sm" type="submit" disabled={!question.trim()}>Post question</button>
       </div>
-      {tasks.length === 0 ? (
-        <p className="section-empty">No cards here yet.</p>
-      ) : (
-        <div className="section-cards">
-          {tasks.map((task, i) => (
-            <TaskCard key={task.id} task={task} index={i} onUpdate={onUpdate} teamNames={teamNames} roster={roster} />
-          ))}
-        </div>
-      )}
-    </div>
+    </form>
   )
 }
-
-// ── QnaCard ───────────────────────────────────────────────────────────────────
 
 function QnaCard({
   item, onAddAnswer, defaultName,
@@ -615,66 +820,43 @@ function QnaCard({
 
   return (
     <article className="qna-card">
-      <button className="qna-header" onClick={() => setExpanded((v) => !v)}>
-        <div className="qna-question-wrap">
-          <span className="qna-q-badge">Q</span>
-          <p className="qna-question">{item.question}</p>
-        </div>
-        <div className="qna-meta">
+      <button type="button" className="qna-head" onClick={() => setExpanded((v) => !v)}>
+        <span className="avatar avatar-sm">{initialOf(item.author)}</span>
+        <span className="qna-question">{item.question}</span>
+        <span className="qna-meta">
           <span className="qna-author">{item.author}</span>
-          <span className="answer-count">{item.answers.length} {item.answers.length === 1 ? 'answer' : 'answers'}</span>
-          <span className="qna-chevron">{expanded ? '▲' : '▼'}</span>
-        </div>
+          <span className="qna-count">{item.answers.length} {item.answers.length === 1 ? 'answer' : 'answers'}</span>
+          <span className="qna-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+        </span>
       </button>
       {expanded && (
         <div className="qna-body">
           {item.answers.length > 0 ? (
-            <ul className="answers-list">
+            <ul className="comment-list">
               {item.answers.map((ans) => (
-                <li key={ans.id} className="answer-item">
-                  <span className="qna-a-badge">A</span>
-                  <div className="answer-content">
-                    <p>{ans.text}</p>
-                    <span className="answer-author">— {ans.author}</span>
+                <li key={ans.id} className="comment-item">
+                  <span className="avatar">{initialOf(ans.author)}</span>
+                  <div className="comment-body">
+                    <p className="comment-meta"><span className="comment-author">{ans.author}</span></p>
+                    <p className="comment-text">{ans.text}</p>
                   </div>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="no-answers">No answers yet — be the first.</p>
+            <p className="quiet-text">No answers yet — be the first.</p>
           )}
-          <div className="add-answer-form">
-            <textarea className="feedback-textarea" placeholder="Write an answer..." value={answerText} rows={2}
+          <div className="comment-composer">
+            <textarea placeholder="Write an answer…" value={answerText} rows={2}
               onChange={(e) => setAnswerText(e.target.value)} />
-            <div className="answer-form-footer">
-              <span className="posting-as">Posting as {defaultName}</span>
-              <button className="action-btn-save" onClick={submitAnswer} disabled={!answerText.trim()}>Answer</button>
-            </div>
+            <button type="button" className="btn btn-primary btn-sm" onClick={submitAnswer} disabled={!answerText.trim()}>
+              Answer
+            </button>
           </div>
+          <p className="posting-as">Posting as {defaultName}</p>
         </div>
       )}
     </article>
-  )
-}
-
-// ── QnaComposer ───────────────────────────────────────────────────────────────
-
-function QnaComposer({ onPost, defaultName }: { onPost: (question: string) => Promise<void>; defaultName: string }) {
-  const [question, setQuestion] = useState('')
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault(); const q = question.trim(); if (!q) return
-    void onPost(q).then(() => setQuestion(''))
-  }
-  return (
-    <form className="composer-form" onSubmit={handleSubmit}>
-      <label className="field">
-        <span>Your question</span>
-        <textarea placeholder="What do you need to know?" value={question} rows={4}
-          onChange={(e) => setQuestion(e.target.value)} />
-      </label>
-      <p className="posting-as">Posting as {defaultName}</p>
-      <button className="primary-button" type="submit" disabled={!question.trim()}>Post question</button>
-    </form>
   )
 }
 
@@ -700,7 +882,6 @@ function PmNotes({
 
   useEffect(() => {
     let isActive = true
-
     async function loadSavedNotes() {
       try {
         const saved = await fetchPmNotes()
@@ -712,18 +893,15 @@ function PmNotes({
         if (isActive) setSavedNotesLoaded(false)
       }
     }
-
     void loadSavedNotes()
     return () => { isActive = false }
   }, [])
 
   useEffect(() => {
     if (!savedNotesLoaded) return
-
     const timeout = window.setTimeout(() => {
       void savePmNotes({ notes, scratchNotes })
     }, 650)
-
     return () => window.clearTimeout(timeout)
   }, [notes, scratchNotes, savedNotesLoaded])
 
@@ -734,49 +912,36 @@ function PmNotes({
   }
 
   return (
-    <div className="notes-page">
-      <div className="notes-header">
-        <div><p className="eyebrow">PM View</p><h2 className="notes-title">{teamName} Notes</h2></div>
-      </div>
+    <div className="page">
       {tasks.length === 0 ? (
-        <p className="loading-text">No cards in {teamName} yet.</p>
+        <p className="quiet-text">No cards in {teamName} yet.</p>
       ) : (
         <div className="notes-grid">
           {tasks.map((task) => {
             const dueState = getDueState(task.dueDate)
-            const statusInfo = CARD_STATUSES.find((s) => s.id === task.cardStatus)
             const shownTags = visibleTags(task.tags)
             return (
-              <div key={task.id} className="note-card">
-                <div className="note-card-header">
-                  <div className="note-card-meta">
-                    <span className={`due-pill due-${dueState.tone}`}>{dueState.label}</span>
-                    <span className={`section-status-badge section-status-${task.cardStatus}`}>
-                      {statusInfo?.shortLabel}
-                    </span>
-                    {shownTags.map((tag) => (
-                      <span key={tag} className={`tag-pill ${tag === 'Blocked' ? 'tag-blocked' : tag === 'Need Help' ? 'tag-need-help' : ''}`}>{tag}</span>
-                    ))}
-                  </div>
-                  <h4 className="note-card-title">{task.title}</h4>
-                  <p className="note-card-sub">{task.assignee} · {formatShortDate(task.dueDate)}</p>
+              <div key={task.id} className="panel note-card">
+                <div className="note-card-chips">
+                  <span className={`due-chip due-${dueState.tone}`}>{dueState.label}</span>
+                  <span className={`status-chip status-${task.cardStatus}`}>{statusLabel(task.cardStatus)}</span>
+                  {shownTags.map((tag) => (
+                    <span key={tag} className={`tag-chip tag-${tag.toLowerCase().replace(' ', '-')} active static`}>{tag}</span>
+                  ))}
                 </div>
-                <label className="field note-field">
-                  <span>PM notes</span>
-                  <textarea className="note-textarea" placeholder="Add observations, blockers, or action items..."
-                    value={notes[String(task.id)] ?? ''} rows={4}
-                    onChange={(e) => setNote(String(task.id), e.target.value)} />
-                </label>
+                <h4 className="note-card-title">{task.title}</h4>
+                <p className="note-card-sub">{task.assignee} · {formatShortDate(task.dueDate)}</p>
+                <textarea className="note-textarea" placeholder="Observations, blockers, action items…"
+                  value={notes[String(task.id)] ?? ''} rows={4}
+                  onChange={(e) => setNote(String(task.id), e.target.value)} />
               </div>
             )
           })}
         </div>
       )}
-      <section className="scratch-notes">
-        <div className="scratch-notes-header">
-          <div>
-            <h3>Scratchpad</h3>
-          </div>
+      <section className="panel">
+        <div className="panel-head">
+          <h3 className="panel-title">Scratchpad</h3>
           <div className="format-toolbar" aria-label="Formatting controls">
             <button type="button" title="Bold" onClick={() => formatScratch('bold')}><strong>B</strong></button>
             <button type="button" title="Italic" onClick={() => formatScratch('italic')}><em>I</em></button>
@@ -789,7 +954,7 @@ function PmNotes({
           contentEditable
           role="textbox"
           aria-label={`${teamName} PM scratchpad`}
-          data-placeholder="Write general meeting notes, follow-ups, or reminders..."
+          data-placeholder="Meeting notes, follow-ups, reminders…"
           dangerouslySetInnerHTML={{ __html: scratchNotes }}
           onInput={(e) => setScratchNotes(e.currentTarget.innerHTML)}
         />
@@ -801,14 +966,11 @@ function PmNotes({
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 function Dashboard({
-  team, teamName, tasks, isAdmin, availableTeams, onTeamChange,
+  team, teamName, tasks,
 }: {
   team: TeamId
   teamName: string
   tasks: Task[]
-  isAdmin: boolean
-  availableTeams: Array<{ id: TeamId; label: string }>
-  onTeamChange: (team: TeamId) => void
 }) {
   const [activity, setActivity] = useState<TeamActivityEvent[]>([])
   const [isLoadingActivity, setIsLoadingActivity] = useState(true)
@@ -839,51 +1001,38 @@ function Dashboard({
     return acc
   }, {})
   const workloadEntries = Object.entries(workload).sort((a, b) => b[1] - a[1])
+  const maxLoad = Math.max(1, ...workloadEntries.map(([, c]) => c))
+
+  const stats: Array<{ label: string; value: number; tone: 'red' | 'amber' | 'gray' }> = [
+    { label: 'Overdue', value: overdueCount, tone: 'red' },
+    { label: 'Due soon', value: dueSoonCount, tone: 'amber' },
+    { label: 'Blocked', value: blockedCount, tone: 'red' },
+    { label: 'Need help', value: needHelpCount, tone: 'amber' },
+  ]
 
   return (
-    <div className="notes-page">
-      <div className="notes-header">
-        <div><p className="eyebrow">PM View</p><h2 className="notes-title">{teamName} Dashboard</h2></div>
-        {isAdmin && (
-          <div className="manager-toggle">
-            {availableTeams.map((t) => (
-              <button key={t.id} className={`manager-toggle-btn ${team === t.id ? 'active' : ''}`}
-                onClick={() => onTeamChange(t.id)}>
-                {t.label}
-              </button>
-            ))}
+    <div className="page">
+      <div className="stat-grid">
+        {stats.map((s) => (
+          <div key={s.label} className={`stat-tile ${s.value > 0 ? `stat-${s.tone}` : ''}`}>
+            <span className="stat-value">{String(s.value).padStart(2, '0')}</span>
+            <span className="stat-label">{s.label}</span>
           </div>
-        )}
+        ))}
       </div>
 
-      <div className="dashboard-stats-grid">
-        <div className="dashboard-stat-card">
-          <span className="dashboard-stat-value">{overdueCount}</span>
-          <span className="dashboard-stat-label">Overdue</span>
-        </div>
-        <div className="dashboard-stat-card">
-          <span className="dashboard-stat-value">{dueSoonCount}</span>
-          <span className="dashboard-stat-label">Due soon</span>
-        </div>
-        <div className="dashboard-stat-card">
-          <span className="dashboard-stat-value">{blockedCount}</span>
-          <span className="dashboard-stat-label">Blocked</span>
-        </div>
-        <div className="dashboard-stat-card">
-          <span className="dashboard-stat-value">{needHelpCount}</span>
-          <span className="dashboard-stat-label">Need help</span>
-        </div>
-      </div>
-
-      <section className="scratch-notes">
-        <div className="scratch-notes-header"><div><h3>Workload</h3></div></div>
+      <section className="panel">
+        <div className="panel-head"><h3 className="panel-title">Workload</h3><span className="panel-note">open cards per person</span></div>
         {workloadEntries.length === 0 ? (
-          <p className="no-answers">No open cards.</p>
+          <p className="quiet-text">No open cards in {teamName}.</p>
         ) : (
           <ul className="workload-list">
             {workloadEntries.map(([name, count]) => (
               <li key={name} className="workload-item">
-                <span>{name}</span>
+                <span className="workload-name">{name}</span>
+                <span className="workload-bar-track">
+                  <span className="workload-bar" style={{ width: `${(count / maxLoad) * 100}%` }} />
+                </span>
                 <span className="workload-count">{count}</span>
               </li>
             ))}
@@ -891,17 +1040,17 @@ function Dashboard({
         )}
       </section>
 
-      <section className="scratch-notes">
-        <div className="scratch-notes-header"><div><h3>Recent activity</h3></div></div>
+      <section className="panel">
+        <div className="panel-head"><h3 className="panel-title">Recent activity</h3></div>
         {isLoadingActivity ? (
-          <p className="loading-text">Loading activity...</p>
+          <p className="quiet-text">Loading activity…</p>
         ) : activity.length === 0 ? (
-          <p className="no-answers">No activity yet.</p>
+          <p className="quiet-text">No activity yet.</p>
         ) : (
           <ul className="activity-list">
             {activity.map((event) => (
               <li key={event.id} className="activity-item">
-                <span className="activity-text">{formatEventText(event)} on "{event.cardTitle}"</span>
+                <span className="activity-text">{formatEventText(event)} on “{event.cardTitle}”</span>
                 <span className="activity-time">{formatRelativeTime(event.createdAt)}</span>
               </li>
             ))}
@@ -914,7 +1063,7 @@ function Dashboard({
 
 // ── AdminPanel ────────────────────────────────────────────────────────────────
 
-function AdminPanel() {
+function AdminPanel({ teamNames }: { teamNames: Record<TeamId, string> }) {
   const [users, setUsers] = useState<RosterUser[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
@@ -946,15 +1095,12 @@ function AdminPanel() {
   }
 
   return (
-    <div className="notes-page">
-      <div className="notes-header">
-        <div><p className="eyebrow">Admin</p><h2 className="notes-title">Manage roles</h2></div>
-      </div>
+    <div className="page">
       {error && <p className="form-error">{error}</p>}
       {isLoading ? (
-        <p className="loading-text">Loading users...</p>
+        <p className="quiet-text">Loading users…</p>
       ) : (
-        <div className="admin-table-wrap">
+        <div className="panel table-panel">
           <table className="admin-table">
             <thead>
               <tr><th>Name</th><th>GitHub</th><th>Role</th><th>Team</th></tr>
@@ -962,8 +1108,13 @@ function AdminPanel() {
             <tbody>
               {users.map((person) => (
                 <tr key={person.id}>
-                  <td>{person.displayName}</td>
-                  <td>@{person.githubLogin}</td>
+                  <td>
+                    <span className="admin-user">
+                      <span className="avatar avatar-sm">{initialOf(person.displayName)}</span>
+                      {person.displayName}
+                    </span>
+                  </td>
+                  <td className="admin-login">@{person.githubLogin}</td>
                   <td>
                     <select value={person.role}
                       onChange={(e) => void handleRoleChange(person.id, e.target.value as Role, person.team)}>
@@ -975,8 +1126,8 @@ function AdminPanel() {
                     <select value={person.team ?? ''}
                       onChange={(e) => void handleRoleChange(person.id, person.role, e.target.value ? (e.target.value as TeamId) : null)}>
                       <option value="">No team</option>
-                      <option value="team1">Team 1</option>
-                      <option value="team2">Team 2</option>
+                      <option value="team1">{teamNames.team1}</option>
+                      <option value="team2">{teamNames.team2}</option>
                     </select>
                   </td>
                 </tr>
@@ -994,12 +1145,10 @@ function AdminPanel() {
 function App() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [roster, setRoster] = useState<RosterUser[]>([])
-  const [draft, setDraft] = useState<TaskDraft>(INITIAL_DRAFT)
   const [teamNames, setTeamNames] = useState<Record<TeamId, string>>({ team1: 'Team 1', team2: 'Team 2' })
   const [activeTab, setActiveTab] = useState<TabId>('team1')
   const [qnaItems, setQnaItems] = useState<QnaQuestion[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState('')
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [githubConfigured, setGithubConfigured] = useState(true)
@@ -1007,6 +1156,8 @@ function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [myTasksOnly, setMyTasksOnly] = useState(false)
   const [dashboardTeam, setDashboardTeam] = useState<TeamId>('team1')
+  const [selectedCardId, setSelectedCardId] = useState<Task['id'] | null>(null)
+  const [newCardOpen, setNewCardOpen] = useState(false)
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -1061,40 +1212,29 @@ function App() {
     : rawActiveTasks
   const defaultName = authUser?.displayName ?? ''
 
-  function updateDraft<K extends keyof TaskDraft>(field: K, value: TaskDraft[K]) {
-    setDraft((cur) => ({ ...cur, [field]: value }))
-  }
-
   function selectTab(tab: TabId) {
     setActiveTab(tab)
-    if (tab === 'team1' || tab === 'team2') {
-      setDraft((cur) => ({ ...cur, team: tab }))
-    }
   }
 
-  async function handleCreateTask(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault()
-    const title = draft.title.trim(); if (!title) return
-    const tags = buildTags(draft.presetTags)
-
-    setIsSaving(true); setError('')
+  async function handleCreateTask(draft: TaskDraft): Promise<boolean> {
+    const title = draft.title.trim(); if (!title) return false
+    setError('')
     try {
       const card = await createCard({
         title,
         description: draft.description.trim(),
-        assigneeUserId: null,
+        assigneeUserId: draft.assigneeUserId,
         dueDate: draft.dueDate,
-        tags,
+        tags: buildTags(draft.presetTags),
         team: draft.team,
         cardStatus: 'started',
         priority: draft.priority,
       })
       setTasks((cur) => [...cur, card])
-      setDraft((cur) => ({ ...INITIAL_DRAFT, dueDate: offsetDate(4), team: cur.team }))
+      return true
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create card.')
-    } finally {
-      setIsSaving(false)
+      return false
     }
   }
 
@@ -1120,6 +1260,12 @@ function App() {
     }
   }
 
+  function handleDropCard(id: string, status: CardStatus) {
+    const current = tasks.find((t) => String(t.id) === id)
+    if (!current || current.cardStatus === status) return
+    void handleUpdateTask(current.id, { cardStatus: status })
+  }
+
   async function handleCreateQuestion(question: string) {
     try {
       const created = await createQuestion(question)
@@ -1143,25 +1289,22 @@ function App() {
     setAuthUser(null)
   }
 
-  function handleUserUpdate(user: AuthUser) {
-    setAuthUser(user)
-  }
-
   if (!authUser) {
     return (
-      <div className="app-shell">
-        <div className="signin-wall">
-          <h1>Cardboard</h1>
+      <div className="signin-wall">
+        <div className="signin-card">
+          <Wordmark />
           {!authChecked ? (
-            <p className="loading-text">Loading...</p>
+            <p className="quiet-text">Loading…</p>
           ) : !githubConfigured ? (
-            <span className="auth-status">GitHub OAuth not configured</span>
+            <p className="quiet-text">GitHub OAuth not configured</p>
           ) : (
             <>
-              <p>Sign in with GitHub to view and manage your team's board.</p>
-              <a className="github-login-btn" href="/auth/github/start">Sign in with GitHub</a>
+              <p className="signin-copy">Track your team's work — boards, priorities, and accountability for the class projects.</p>
+              <a className="btn btn-primary signin-btn" href="/auth/github/start">Sign in with GitHub</a>
             </>
           )}
+          <p className="signin-foot">Dixie Tech · Software Development</p>
         </div>
       </div>
     )
@@ -1169,177 +1312,170 @@ function App() {
 
   const canSeeDashboard = authUser.isAdmin || (authUser.role === 'pm' && Boolean(authUser.team))
   const dashboardTeamResolved: TeamId = authUser.isAdmin ? dashboardTeam : (authUser.team ?? 'team1')
+  const isBoardView = activeTab === 'team1' || activeTab === 'team2'
+  const selectedCard = selectedCardId === null ? null : tasks.find((t) => t.id === selectedCardId) ?? null
+
+  const viewTitle =
+    activeTab === 'qna' ? 'Q&A'
+    : activeTab === 'dashboard' ? `${teamNames[dashboardTeamResolved]} Dashboard`
+    : activeTab === 'notes' ? `${authUser.team ? teamNames[authUser.team] : ''} Notes`
+    : activeTab === 'admin' ? 'Manage roles'
+    : `${teamNames[activeTab]} Board`
+
+  const viewEyebrow =
+    activeTab === 'qna' ? 'Forum'
+    : activeTab === 'dashboard' || activeTab === 'notes' ? 'PM view'
+    : activeTab === 'admin' ? 'Admin'
+    : 'Board'
 
   return (
-    <div className="app-shell">
-      <div className="page-wrapper">
-        <div className="top-bar">
-          <nav className="tab-bar">
-            {(['team1', 'team2'] as TeamId[]).map((tid) => (
-              <TabItem key={tid} label={teamNames[tid]} active={activeTab === tid}
-                onClick={() => selectTab(tid)}
-                onRename={(n) => setTeamNames((cur) => ({ ...cur, [tid]: n }))} />
-            ))}
-            <TabItem label="Q&A" active={activeTab === 'qna'} onClick={() => selectTab('qna')} />
-            {canSeeDashboard && (
-              <TabItem label="Dashboard" active={activeTab === 'dashboard'} onClick={() => selectTab('dashboard')} />
-            )}
-            {authUser.role === 'pm' && authUser.team && (
-              <TabItem label="PM Notes" active={activeTab === 'notes'} onClick={() => selectTab('notes')} />
-            )}
-            {authUser.isAdmin && (
-              <TabItem label="Admin" active={activeTab === 'admin'} onClick={() => selectTab('admin')} />
-            )}
-          </nav>
-          <div className="top-bar-actions">
-            {(activeTab === 'team1' || activeTab === 'team2') && (
-              <button
-                type="button"
-                className={`tab-btn ${myTasksOnly ? 'active' : ''}`}
-                onClick={() => setMyTasksOnly((v) => !v)}
-              >
-                My Tasks
-              </button>
-            )}
-            <ThemeToggle theme={theme} onToggle={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} />
-            <AccountMenu
-              key={authUser.id}
-              user={authUser}
-              onLogout={() => void handleLogout()}
-              onUserUpdate={handleUserUpdate}
-            />
-          </div>
+    <div className="app">
+      <aside className="sidebar">
+        <div className="sidebar-brand"><Wordmark /></div>
+        <nav className="side-nav">
+          <p className="nav-eyebrow">Boards</p>
+          <TeamNavItem label={teamNames.team1} active={activeTab === 'team1'} count={team1Tasks.length}
+            onClick={() => selectTab('team1')}
+            onRename={(n) => setTeamNames((cur) => ({ ...cur, team1: n }))} />
+          <TeamNavItem label={teamNames.team2} active={activeTab === 'team2'} count={team2Tasks.length}
+            onClick={() => selectTab('team2')}
+            onRename={(n) => setTeamNames((cur) => ({ ...cur, team2: n }))} />
+          <NavItem icon="qna" label="Q&A" active={activeTab === 'qna'} onClick={() => selectTab('qna')} />
+          {(canSeeDashboard || (authUser.role === 'pm' && authUser.team)) && (
+            <p className="nav-eyebrow">Manage</p>
+          )}
+          {canSeeDashboard && (
+            <NavItem icon="dashboard" label="Dashboard" active={activeTab === 'dashboard'} onClick={() => selectTab('dashboard')} />
+          )}
+          {authUser.role === 'pm' && authUser.team && (
+            <NavItem icon="notes" label="PM Notes" active={activeTab === 'notes'} onClick={() => selectTab('notes')} />
+          )}
+          {authUser.isAdmin && (
+            <>
+              <p className="nav-eyebrow">Admin</p>
+              <NavItem icon="admin" label="Admin" active={activeTab === 'admin'} onClick={() => selectTab('admin')} />
+            </>
+          )}
+        </nav>
+        <div className="sidebar-foot">
+          <ThemeToggle theme={theme} onToggle={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} />
+          <SidebarUser
+            key={authUser.id}
+            user={authUser}
+            teamNames={teamNames}
+            onLogout={() => void handleLogout()}
+            onUserUpdate={setAuthUser}
+          />
         </div>
+      </aside>
 
-        {activeTab === 'notes' && authUser.role === 'pm' && authUser.team ? (
-          <div className="notes-wrapper">
+      <div className="main">
+        <header className="view-bar">
+          <div className="view-title-wrap">
+            <p className="view-eyebrow">{viewEyebrow}</p>
+            <h1 className="view-title">{viewTitle}</h1>
+          </div>
+          <div className="view-actions">
+            {activeTab === 'dashboard' && authUser.isAdmin && (
+              <div className="segmented">
+                {(['team1', 'team2'] as TeamId[]).map((tid) => (
+                  <label key={tid} className={`segment ${dashboardTeam === tid ? 'selected' : ''}`}>
+                    <input type="radio" name="dashboard-team"
+                      checked={dashboardTeam === tid} onChange={() => setDashboardTeam(tid)} />
+                    {teamNames[tid]}
+                  </label>
+                ))}
+              </div>
+            )}
+            {isBoardView && (
+              <>
+                <button
+                  type="button"
+                  className={`filter-chip ${myTasksOnly ? 'active' : ''}`}
+                  onClick={() => setMyTasksOnly((v) => !v)}
+                  aria-pressed={myTasksOnly}
+                >
+                  My Tasks
+                </button>
+                <button type="button" className="btn btn-primary" onClick={() => setNewCardOpen(true)}>
+                  + New card
+                </button>
+              </>
+            )}
+          </div>
+        </header>
+
+        <div className="view-body">
+          {error && <p className="error-banner">{error}</p>}
+
+          {activeTab === 'notes' && authUser.role === 'pm' && authUser.team ? (
             <PmNotes
               tasks={authUser.team === 'team1' ? team1Tasks : team2Tasks}
               teamName={teamNames[authUser.team]}
             />
-          </div>
-        ) : activeTab === 'dashboard' && canSeeDashboard ? (
-          <div className="notes-wrapper">
+          ) : activeTab === 'dashboard' && canSeeDashboard ? (
             <Dashboard
               key={dashboardTeamResolved}
               team={dashboardTeamResolved}
               teamName={teamNames[dashboardTeamResolved]}
               tasks={dashboardTeamResolved === 'team1' ? team1Tasks : team2Tasks}
-              isAdmin={authUser.isAdmin}
-              availableTeams={[{ id: 'team1', label: teamNames.team1 }, { id: 'team2', label: teamNames.team2 }]}
-              onTeamChange={setDashboardTeam}
             />
-          </div>
-        ) : activeTab === 'admin' && authUser.isAdmin ? (
-          <div className="notes-wrapper">
-            <AdminPanel />
-          </div>
-        ) : (
-          <main className="app-layout">
-            <aside className="composer-panel">
-              {activeTab === 'qna' ? (
-                <>
-                  <div className="composer-heading"><h2>Ask a question</h2></div>
-                  <QnaComposer onPost={handleCreateQuestion} defaultName={defaultName} />
-                </>
+          ) : activeTab === 'admin' && authUser.isAdmin ? (
+            <AdminPanel teamNames={teamNames} />
+          ) : activeTab === 'qna' ? (
+            <div className="page qna-page">
+              <QnaComposer onPost={handleCreateQuestion} defaultName={defaultName} />
+              {qnaItems.length === 0 ? (
+                <p className="quiet-text">No questions yet — post the first one.</p>
               ) : (
-                <>
-                  <div className="composer-heading"><h2>Add card</h2></div>
-                  <form className="composer-form" onSubmit={(e) => void handleCreateTask(e)}>
-                    <label className="field"><span>Title</span>
-                      <input type="text" placeholder="Plan launch office hours" value={draft.title}
-                        onChange={(e) => updateDraft('title', e.target.value)} />
-                    </label>
-                    <label className="field"><span>Description</span>
-                      <textarea placeholder="What needs to happen next?" value={draft.description} rows={3}
-                        onChange={(e) => updateDraft('description', e.target.value)} />
-                    </label>
-                    <label className="field"><span>Due date</span>
-                      <input type="date" value={draft.dueDate}
-                        onChange={(e) => updateDraft('dueDate', e.target.value)} />
-                    </label>
-                    <div className="field"><span>Priority</span>
-                      <div className="section-radio-row">
-                        {PRIORITIES.map((p) => (
-                          <label key={p.id} className={`section-radio-option priority-radio-${p.id} ${draft.priority === p.id ? 'selected' : ''}`}>
-                            <input type="radio" name="draft-priority"
-                              checked={draft.priority === p.id}
-                              onChange={() => updateDraft('priority', p.id)} />
-                            {p.label}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                    <p className="posting-as">Card owner: {defaultName}</p>
-                    <div className="field"><span>Status tags</span>
-                      <TagToggleRow selected={draft.presetTags}
-                        onChange={(tags) => updateDraft('presetTags', tags)} />
-                    </div>
-                    {error && <p className="form-error">{error}</p>}
-                    <button className="primary-button" type="submit" disabled={isSaving}>
-                      {isSaving ? 'Saving...' : `Add to ${teamNames[draft.team]}`}
-                    </button>
-                  </form>
-                </>
-              )}
-            </aside>
-
-            <section className="cards-panel">
-              {activeTab === 'qna' ? (
-                qnaItems.length === 0
-                  ? <p className="loading-text">No questions yet — post the first one.</p>
-                  : <div className="qna-list">{qnaItems.map((item) => (
-                      <QnaCard key={item.id} item={item}
-                        defaultName={defaultName}
-                        onAddAnswer={handleCreateAnswer} />
-                    ))}</div>
-              ) : isLoading ? (
-                <p className="loading-text">Loading cards...</p>
-              ) : (
-                <div className="sections-grid">
-                  {CARD_STATUSES.map((s) => (
-                    <SectionColumn
-                      key={s.id}
-                      sectionId={s.id}
-                      label={s.label}
-                      tasks={activeTasks.filter((t) => t.cardStatus === s.id)}
-                      onUpdate={handleUpdateTask}
-                      teamNames={teamNames}
-                      roster={roster}
-                    />
+                <div className="qna-list">
+                  {qnaItems.map((item) => (
+                    <QnaCard key={item.id} item={item} defaultName={defaultName} onAddAnswer={handleCreateAnswer} />
                   ))}
                 </div>
               )}
-            </section>
-          </main>
-        )}
+            </div>
+          ) : isLoading ? (
+            <p className="quiet-text page">Loading cards…</p>
+          ) : (
+            <div className="board">
+              {CARD_STATUSES.map((s) => (
+                <BoardColumn
+                  key={s.id}
+                  sectionId={s.id}
+                  label={s.label}
+                  tasks={activeTasks.filter((t) => t.cardStatus === s.id)}
+                  onOpen={setSelectedCardId}
+                  onDropCard={handleDropCard}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
+
+      {selectedCard && (
+        <CardDetailModal
+          key={String(selectedCard.id)}
+          task={selectedCard}
+          roster={roster}
+          teamNames={teamNames}
+          onUpdate={handleUpdateTask}
+          onClose={() => setSelectedCardId(null)}
+        />
+      )}
+      {newCardOpen && isBoardView && (
+        <NewCardModal
+          defaultTeam={activeTab}
+          defaultAssigneeId={authUser.id}
+          roster={roster}
+          teamNames={teamNames}
+          onCreate={handleCreateTask}
+          onClose={() => setNewCardOpen(false)}
+        />
+      )}
     </div>
   )
-}
-
-// ── Date helpers ──────────────────────────────────────────────────────────────
-
-function offsetDate(days: number) {
-  const d = new Date(TODAY)
-  d.setDate(d.getDate() + days)
-  return d.toISOString().slice(0, 10)
-}
-
-function formatShortDate(date: string) {
-  if (!date) return 'No date'
-  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(
-    new Date(`${date}T12:00:00`),
-  )
-}
-
-function getDueState(date: string): { label: string; tone: 'calm' | 'soon' | 'late' } {
-  if (!date) return { label: 'No due date', tone: 'calm' }
-  const due = new Date(`${date}T12:00:00`)
-  const d = Math.ceil((due.getTime() - TODAY.getTime()) / 86400000)
-  if (d < 0)  return { label: `${Math.abs(d)}d late`, tone: 'late' }
-  if (d <= 2) return { label: d === 0 ? 'Due today' : `${d}d left`, tone: 'soon' }
-  return { label: formatShortDate(date), tone: 'calm' }
 }
 
 export default App

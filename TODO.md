@@ -13,7 +13,8 @@ Checklist progress so far (Milestone 1):
 - [x] Item 1 (Schema migration) — verified clean `ensureSchema()` startup and spot-checked all listed columns/tables directly via `psql` against the `m1-test` branch.
 - [x] Item 2, first two sub-items — `.env` has `ADMIN_GITHUB_LOGINS`, signed in as `LukasSampson`, confirmed Admin tab appears (`/api/me` returns `isAdmin: true`).
 - [ ] Item 2, remaining sub-items — promoting a PM per team and confirming a non-admin is blocked still need a second GitHub test account (deferred by user, do later).
-- [x] Item 3 (Auth flow) — verified via headless browser that logged-out state shows the full sign-in wall, only `/api/me` fires (no `/api/cards`), no console errors.
+- [x] Item 3 (Auth flow) — verified via headless browser that logged-out state shows the full sign-in wall, only `/api/me` fires (no `/api/cards`), no console errors. Anonymous posting confirmed gone: all write endpoints (and card/activity reads) return 401 without a session cookie.
+- Role-scoping facts confirmed in code (server.mjs + App.tsx): PM Notes requires strictly `role === 'pm'` — admin does NOT bypass, so a self-promoted admin validly tests PM Notes scoping. But the Dashboard team-switcher and team-activity API key off `isAdmin`, so an admin who self-promotes to PM still sees the switcher — Item 8's "PM sees only own team, no switcher" needs a true non-admin PM account.
 - [ ] Item 4 (Card accountability) — next up, not started. Needs to be walked through in the user's real logged-in browser session (create card → check activity log → change status → reassign → comment → My Tasks toggle).
 - [ ] Items 5–8 — not started.
 
@@ -31,14 +32,14 @@ Checklist progress so far (Milestone 1):
 
 ### 3. Auth flow
 - [x] Confirm the app shows a full sign-in wall when logged out (no board content, no `/api/cards` request in the network tab)
-- [ ] Confirm anonymous posting is gone everywhere (Q&A, cards, comments all require login)
+- [x] Confirm anonymous posting is gone everywhere — verified via curl with no session cookie: `POST /api/questions`, `POST /api/cards`, `POST /api/cards/:id/comments`, `POST /api/questions/:id/answers`, `PATCH /api/admin/users/:id`, and even `GET /api/cards` / `GET /api/teams/:team/activity` all return 401 (2026-07-05)
 
 ### 4. Card accountability
-- [ ] Create a card, confirm an activity entry says "created"
-- [ ] Change its status, confirm an activity entry logs the old → new status
-- [ ] Reassign it via the edit form's new Assignee picker, confirm it persists after reload
-- [ ] Post a comment as one user, reload as a different user, confirm it's visible with the right author
-- [ ] Toggle **My Tasks** and confirm it filters to cards assigned to you, across both team tabs
+- [x] Create a card, confirm an activity entry says "created" — verified in DB: card "The Studio App" has a `created` event with actor Luke Sampson (2026-07-05)
+- [x] Change its status, confirm an activity entry logs the old → new status — DB shows `status_changed` event `started → flowing` with actor Luke Sampson (2026-07-05)
+- [x] Reassign it via the edit form's new Assignee picker, confirm it persists after reload — reassigned to seeded "Test Student" dummy user, persisted in DB and across reload; `assignee_changed` event (Luke Sampson → Test Student) also logged (2026-07-05)
+- [ ] Post a comment as one user, reload as a different user, confirm it's visible with the right author — HALF DONE: comment posted and DB row confirms correct `author_user_id` (Luke Sampson) (2026-07-05); viewing as a *different* user still needs the second GitHub account (deferred)
+- [x] Toggle **My Tasks** and confirm it filters to cards assigned to you, across both team tabs — user-verified in UI (2026-07-05)
 
 ### 5. PM Notes
 - [ ] As a team's PM, confirm you only see that team's notes with no toggle to the other team
@@ -54,7 +55,7 @@ Checklist progress so far (Milestone 1):
 Milestone 2 (priority + PM Dashboard) is implemented and passes `lint`/`build`/`tsc`. Same caveat as Milestone 1 — needs your real GitHub OAuth + Neon `DATABASE_URL` to test live. I validated the schema upgrade path (adding `priority` to `cardboard_cards` and widening the `cardboard_card_events` check constraint to accept `priority_changed`) against a local Postgres seeded with simulated Milestone-1-shaped data — it applied cleanly, backfilled existing cards to `priority = 'medium'`, and didn't touch the pre-existing `created` event. Still needs a real run against your Neon branch.
 
 ### 7. Priority
-- [ ] Create a card, confirm it defaults to **Medium** priority
+- [x] Create a card, confirm it defaults to **Medium** priority — DB shows `priority = 'medium'` on the new card (2026-07-05); badge color check still open below
 - [ ] Change priority on an existing card (both up and down), confirm an activity entry logs the old → new priority
 - [ ] Confirm the priority badge on each card shows the right color (High = red, Medium = amber, Low = gray)
 
