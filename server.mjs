@@ -235,6 +235,60 @@ async function handleApi(req, res, url) {
     return
   }
 
+  // Check-ins: a PM's dated 1:1 notes + goals about each student on their
+  // team. Writable by that team's PM or an admin; a student can additionally
+  // read (never edit) the entries that are about them.
+
+  if (url.pathname === '/api/checkins/mine' && req.method === 'GET') {
+    const user = await requireCurrentUser(req)
+    const checkins = await listCheckins({ subjectUserId: user.id })
+    sendJson(res, 200, { checkins })
+    return
+  }
+
+  const teamCheckinsMatch = url.pathname.match(/^\/api\/teams\/(team1|team2)\/checkins$/)
+  if (teamCheckinsMatch && req.method === 'GET') {
+    const user = await requireCurrentUser(req)
+    requireTeamPmOrAdmin(user, teamCheckinsMatch[1])
+    const checkins = await listCheckins({ team: teamCheckinsMatch[1] })
+    sendJson(res, 200, { checkins })
+    return
+  }
+
+  if (url.pathname === '/api/checkins' && req.method === 'POST') {
+    const user = await requireCurrentUser(req)
+    const body = await readJson(req)
+    const checkin = await createCheckin(body, user)
+    sendJson(res, 201, { checkin })
+    return
+  }
+
+  const checkinMatch = url.pathname.match(/^\/api\/checkins\/([0-9a-f-]{36})$/i)
+  if (checkinMatch && req.method === 'PATCH') {
+    const user = await requireCurrentUser(req)
+    const body = await readJson(req)
+    const checkin = await updateCheckinNotes(checkinMatch[1], body, user)
+    if (!checkin) {
+      sendJson(res, 404, { error: 'Check-in not found.' })
+      return
+    }
+    sendJson(res, 200, { checkin })
+    return
+  }
+
+  const checkinGoalMatch = url.pathname.match(/^\/api\/checkin-goals\/([0-9a-f-]{36})$/i)
+  if (checkinGoalMatch && req.method === 'PATCH') {
+    const user = await requireCurrentUser(req)
+    const body = await readJson(req)
+    const goal = await updateCheckinGoal(checkinGoalMatch[1], body, user)
+    if (!goal) {
+      sendJson(res, 404, { error: 'Goal not found.' })
+      return
+    }
+    sendJson(res, 200, { goal })
+    return
+  }
+
   sendJson(res, 404, { error: 'Not found.' })
 }
 
@@ -477,6 +531,46 @@ async function ensureSchema() {
         alter table cardboard_scratch_notes add constraint cardboard_scratch_notes_team_check check (team in ('team1', 'team2'));
       end if;
     end $$;
+  `
+
+  await sql`
+    create table if not exists cardboard_checkins (
+      id uuid primary key default gen_random_uuid(),
+      classroom_id uuid not null references cardboard_classrooms(id) on delete cascade,
+      team text not null check (team in ('team1', 'team2')),
+      subject_user_id uuid not null references cardboard_users(id) on delete cascade,
+      author_user_id uuid references cardboard_users(id) on delete set null,
+      checkin_date date not null default current_date,
+      notes text not null default '',
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `
+
+  await sql`
+    create index if not exists cardboard_checkins_subject_idx
+      on cardboard_checkins (subject_user_id, created_at desc)
+  `
+
+  await sql`
+    create index if not exists cardboard_checkins_team_idx
+      on cardboard_checkins (classroom_id, team, created_at desc)
+  `
+
+  await sql`
+    create table if not exists cardboard_checkin_goals (
+      id uuid primary key default gen_random_uuid(),
+      checkin_id uuid not null references cardboard_checkins(id) on delete cascade,
+      goal_text text not null,
+      status text not null default 'pending' check (status in ('pending', 'met', 'missed')),
+      order_index integer not null default 0,
+      created_at timestamptz not null default now()
+    )
+  `
+
+  await sql`
+    create index if not exists cardboard_checkin_goals_checkin_idx
+      on cardboard_checkin_goals (checkin_id, order_index)
   `
 
   await sql`
@@ -1101,6 +1195,141 @@ async function updateCurrentUser(user, body) {
   `
 
   return userRowToPayload(updated)
+}
+
+// ── Check-ins ────────────────────────────────────────────────────────────────
+
+function requireTeamPmOrAdmin(user, team) {
+  if (!user.isAdmin && !(user.role === 'pm' && user.team === team)) {
+    throw new HttpError(403, 'PM or admin access required for this team.')
+  }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+async function listCheckins({ team, subjectUserId }) {
+  const rows = team
+    ? await sql`
+        select c.*, su.display_name as subject_name, au.display_name as author_name
+        from cardboard_checkins c
+        join cardboard_users su on su.id = c.subject_user_id
+        left join cardboard_users au on au.id = c.author_user_id
+        where c.classroom_id = ${activeClassroom.id} and c.team = ${team}
+        order by c.created_at desc
+      `
+    : await sql`
+        select c.*, su.display_name as subject_name, au.display_name as author_name
+        from cardboard_checkins c
+        join cardboard_users su on su.id = c.subject_user_id
+        left join cardboard_users au on au.id = c.author_user_id
+        where c.classroom_id = ${activeClassroom.id} and c.subject_user_id = ${subjectUserId}
+        order by c.created_at desc
+      `
+  if (rows.length === 0) return []
+  const goals = await sql`
+    select * from cardboard_checkin_goals
+    where checkin_id = any(${rows.map((r) => r.id)})
+    order by order_index, created_at
+  `
+  return rows.map((row) => checkinRowToPayload(row, goals.filter((g) => g.checkin_id === row.id)))
+}
+
+function checkinRowToPayload(row, goalRows) {
+  return {
+    id: row.id,
+    team: row.team,
+    subjectUserId: row.subject_user_id,
+    subjectName: row.subject_name,
+    authorName: row.author_name ?? 'Unknown',
+    checkinDate: String(row.checkin_date instanceof Date ? row.checkin_date.toISOString() : row.checkin_date).slice(0, 10),
+    notes: row.notes,
+    createdAt: row.created_at,
+    goals: goalRows.map(goalRowToPayload),
+  }
+}
+
+function goalRowToPayload(row) {
+  return { id: row.id, text: row.goal_text, status: row.status }
+}
+
+async function createCheckin(body, user) {
+  const subjectId = String(body.subjectUserId ?? '')
+  if (!UUID_RE.test(subjectId)) throw new HttpError(400, 'A subject is required.')
+  const [subject] = await sql`
+    select id, display_name, team from cardboard_users where id = ${subjectId} limit 1
+  `
+  if (!subject || !subject.team) throw new HttpError(400, 'Subject must be on a team.')
+  requireTeamPmOrAdmin(user, subject.team)
+
+  const notes = normalizeText(body.notes)
+  const goalTexts = (Array.isArray(body.goals) ? body.goals : [])
+    .map((g) => normalizeText(g))
+    .filter(Boolean)
+    .slice(0, 20)
+
+  const [created] = await sql`
+    insert into cardboard_checkins (classroom_id, team, subject_user_id, author_user_id, notes)
+    values (${activeClassroom.id}, ${subject.team}, ${subject.id}, ${user.id}, ${notes})
+    returning *
+  `
+  const goals = []
+  for (const [i, text] of goalTexts.entries()) {
+    const [goal] = await sql`
+      insert into cardboard_checkin_goals (checkin_id, goal_text, order_index)
+      values (${created.id}, ${text}, ${i})
+      returning *
+    `
+    goals.push(goal)
+  }
+  return checkinRowToPayload(
+    { ...created, subject_name: subject.display_name, author_name: user.displayName },
+    goals,
+  )
+}
+
+async function requireCheckinAccess(checkinId, user) {
+  const [row] = await sql`
+    select c.*, su.display_name as subject_name, au.display_name as author_name
+    from cardboard_checkins c
+    join cardboard_users su on su.id = c.subject_user_id
+    left join cardboard_users au on au.id = c.author_user_id
+    where c.id = ${checkinId} limit 1
+  `
+  if (!row) return null
+  requireTeamPmOrAdmin(user, row.team)
+  return row
+}
+
+async function updateCheckinNotes(checkinId, body, user) {
+  const row = await requireCheckinAccess(checkinId, user)
+  if (!row) return null
+  const notes = normalizeText(body.notes)
+  const [updated] = await sql`
+    update cardboard_checkins set notes = ${notes}, updated_at = now()
+    where id = ${checkinId}
+    returning *
+  `
+  const goals = await sql`
+    select * from cardboard_checkin_goals where checkin_id = ${checkinId} order by order_index, created_at
+  `
+  return checkinRowToPayload({ ...row, ...updated }, goals)
+}
+
+async function updateCheckinGoal(goalId, body, user) {
+  const [goal] = await sql`
+    select g.*, c.team from cardboard_checkin_goals g
+    join cardboard_checkins c on c.id = g.checkin_id
+    where g.id = ${goalId} limit 1
+  `
+  if (!goal) return null
+  requireTeamPmOrAdmin(user, goal.team)
+  const status = ['pending', 'met', 'missed'].includes(body.status) ? body.status : goal.status
+  const [updated] = await sql`
+    update cardboard_checkin_goals set status = ${status}
+    where id = ${goalId}
+    returning *
+  `
+  return goalRowToPayload(updated)
 }
 
 function userRowToPayload(row) {

@@ -1,4 +1,4 @@
-import type { CardComment, CardEvent, QnaAnswer, QnaQuestion, Role, RosterUser, Task, TeamActivityEvent, TeamId } from '../types'
+import type { CardComment, CardEvent, Checkin, CheckinGoal, GoalStatus, QnaAnswer, QnaQuestion, Role, RosterUser, Task, TeamActivityEvent, TeamId } from '../types'
 
 type CardPayload = Omit<Task, 'id'> & { id: string }
 
@@ -180,6 +180,52 @@ export async function updateCard(id: Task['id'], card: Omit<Task, 'id' | 'assign
     body: JSON.stringify(card),
   })
   return data.card
+}
+
+interface CheckinsResponse {
+  checkins: Checkin[]
+}
+
+interface CheckinResponse {
+  checkin: Checkin
+}
+
+interface GoalResponse {
+  goal: CheckinGoal
+}
+
+export async function fetchTeamCheckins(team: TeamId): Promise<Checkin[]> {
+  const data = await apiRequest<CheckinsResponse>(`/api/teams/${team}/checkins`)
+  return data.checkins
+}
+
+export async function fetchMyCheckins(): Promise<Checkin[]> {
+  const data = await apiRequest<CheckinsResponse>('/api/checkins/mine')
+  return data.checkins
+}
+
+export async function createCheckin(payload: { subjectUserId: string; notes: string; goals: string[] }): Promise<Checkin> {
+  const data = await apiRequest<CheckinResponse>('/api/checkins', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  return data.checkin
+}
+
+export async function updateCheckinNotes(checkinId: string, notes: string): Promise<Checkin> {
+  const data = await apiRequest<CheckinResponse>(`/api/checkins/${checkinId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ notes }),
+  })
+  return data.checkin
+}
+
+export async function updateCheckinGoalStatus(goalId: string, status: GoalStatus): Promise<CheckinGoal> {
+  const data = await apiRequest<GoalResponse>(`/api/checkin-goals/${goalId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  })
+  return data.goal
 }
 
 async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {

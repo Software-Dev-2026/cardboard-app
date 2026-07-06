@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import type { DragEvent, FormEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import './App.css'
 import {
-  createAnswer, createCard, createCardComment, createQuestion, fetchAdminUsers, fetchCardComments,
-  fetchCardEvents, fetchCards, fetchMe, fetchPmNotes, fetchQuestions, fetchRoster, fetchTeamActivity, logout,
-  savePmNotes, updateCard, updateDefaultName, updateUserRoleTeam,
+  createAnswer, createCard, createCardComment, createCheckin, createQuestion, fetchAdminUsers, fetchCardComments,
+  fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins, fetchPmNotes, fetchQuestions, fetchRoster,
+  fetchTeamActivity, fetchTeamCheckins, logout, savePmNotes, updateCard, updateCheckinGoalStatus,
+  updateCheckinNotes, updateDefaultName, updateUserRoleTeam,
 } from './utils/api'
 import type { AuthUser } from './utils/api'
 import type {
-  CardComment, CardEvent, CardStatus, Priority, QnaQuestion, Role, RosterUser, TabId, Task, TeamActivityEvent, TeamId,
+  CardComment, CardEvent, CardStatus, Checkin, GoalStatus, Priority, QnaQuestion, Role, RosterUser, TabId, Task,
+  TeamActivityEvent, TeamId,
 } from './types'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -162,7 +164,7 @@ function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }
 
 // ── Sidebar nav items ─────────────────────────────────────────────────────────
 
-function NavIcon({ kind }: { kind: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin' }) {
+function NavIcon({ kind }: { kind: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin' | 'checkins' }) {
   const common = {
     width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none' as const,
     stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
@@ -179,13 +181,15 @@ function NavIcon({ kind }: { kind: 'board' | 'qna' | 'dashboard' | 'notes' | 'ad
       return <svg {...common}><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
     case 'admin':
       return <svg {...common}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+    case 'checkins':
+      return <svg {...common}><polyline points="9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
   }
 }
 
 function NavItem({
   icon, label, active, onClick, badge,
 }: {
-  icon: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin'
+  icon: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin' | 'checkins'
   label: string
   active: boolean
   onClick: () => void
@@ -1134,6 +1138,358 @@ function Dashboard({
   )
 }
 
+// ── Check-ins ─────────────────────────────────────────────────────────────────
+// A PM's dated 1:1 notes + goals per student. PM/admin write; the student can
+// read their own entries. Last check-in's goals get resolved (met/missed) at
+// the next one — that's the accountability loop.
+
+const GOAL_STATUSES: Array<{ id: GoalStatus; label: string }> = [
+  { id: 'pending', label: 'Pending' },
+  { id: 'met',     label: 'Met'     },
+  { id: 'missed',  label: 'Missed'  },
+]
+
+function GoalRow({
+  goal, canEdit, onSetStatus,
+}: {
+  goal: { id: string; text: string; status: GoalStatus }
+  canEdit: boolean
+  onSetStatus?: (goalId: string, status: GoalStatus) => void
+}) {
+  return (
+    <li className={`goal-row goal-${goal.status}`}>
+      <span className="goal-text">{goal.text}</span>
+      {canEdit && onSetStatus ? (
+        <div className="segmented segmented-mini">
+          {GOAL_STATUSES.map((s) => (
+            <label key={s.id} className={`segment goal-segment-${s.id} ${goal.status === s.id ? 'selected' : ''}`}>
+              <input type="radio" name={`goal-${goal.id}`} checked={goal.status === s.id}
+                onChange={() => onSetStatus(goal.id, s.id)} />
+              {s.label}
+            </label>
+          ))}
+        </div>
+      ) : (
+        <span className={`goal-status-chip goal-chip-${goal.status}`}>
+          {GOAL_STATUSES.find((s) => s.id === goal.status)?.label}
+        </span>
+      )}
+    </li>
+  )
+}
+
+function CheckinEntry({
+  entry, isLatest, canEdit, showSubject, onSetGoalStatus, onSaveNotes,
+}: {
+  entry: Checkin
+  isLatest: boolean
+  canEdit: boolean
+  showSubject?: boolean
+  onSetGoalStatus?: (goalId: string, status: GoalStatus) => void
+  onSaveNotes?: (checkinId: string, notes: string) => Promise<boolean>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [notesDraft, setNotesDraft] = useState(entry.notes)
+  const pendingCount = entry.goals.filter((g) => g.status === 'pending').length
+
+  async function saveNotes() {
+    if (!onSaveNotes) return
+    const ok = await onSaveNotes(entry.id, notesDraft.trim())
+    if (ok) setEditing(false)
+  }
+
+  return (
+    <article className={`panel checkin-entry ${isLatest ? 'checkin-latest' : ''}`}>
+      <header className="checkin-entry-head">
+        <span className="checkin-date">{formatShortDate(entry.checkinDate)}</span>
+        <span className="checkin-byline">
+          {showSubject ? `${entry.subjectName} · ` : ''}by {entry.authorName}
+        </span>
+        {isLatest && (
+          <span className="checkin-latest-chip">
+            Last check-in{canEdit && pendingCount > 0 ? ` · ${pendingCount} to resolve` : ''}
+          </span>
+        )}
+        {canEdit && onSaveNotes && !editing && (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setNotesDraft(entry.notes); setEditing(true) }}>
+            Edit
+          </button>
+        )}
+      </header>
+      {editing ? (
+        <div className="checkin-notes-edit">
+          <textarea value={notesDraft} rows={3} onChange={(e) => setNotesDraft(e.target.value)} />
+          <div className="modal-actions">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditing(false)}>Cancel</button>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => void saveNotes()}>Save notes</button>
+          </div>
+        </div>
+      ) : (
+        entry.notes && <p className="checkin-notes">{entry.notes}</p>
+      )}
+      {entry.goals.length > 0 && (
+        <div className="checkin-goals">
+          <p className="prop-label">Goals for next check-in</p>
+          <ul className="goal-list">
+            {entry.goals.map((goal) => (
+              <GoalRow key={goal.id} goal={goal} canEdit={canEdit} onSetStatus={onSetGoalStatus} />
+            ))}
+          </ul>
+        </div>
+      )}
+    </article>
+  )
+}
+
+function CheckinComposer({
+  subjectName, onCreate,
+}: {
+  subjectName: string
+  onCreate: (notes: string, goals: string[]) => Promise<boolean>
+}) {
+  const [notes, setNotes] = useState('')
+  const [goals, setGoals] = useState<string[]>([])
+  const [goalInput, setGoalInput] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+
+  function addGoal() {
+    const g = goalInput.trim(); if (!g) return
+    setGoals((cur) => [...cur, g])
+    setGoalInput('')
+  }
+
+  const pendingGoal = goalInput.trim()
+  const allGoals = pendingGoal ? [...goals, pendingGoal] : goals
+  const canSave = Boolean(notes.trim() || allGoals.length > 0)
+
+  async function save() {
+    if (!canSave || isSaving) return
+    setIsSaving(true)
+    const ok = await onCreate(notes.trim(), allGoals)
+    setIsSaving(false)
+    if (ok) { setNotes(''); setGoals([]); setGoalInput('') }
+  }
+
+  return (
+    <section className="panel checkin-composer">
+      <div className="panel-head">
+        <h3 className="panel-title">New check-in</h3>
+        <span className="panel-note">{subjectName}</span>
+      </div>
+      <textarea
+        className="note-textarea"
+        placeholder="How is it going? Blockers, progress, observations…"
+        value={notes}
+        rows={3}
+        onChange={(e) => setNotes(e.target.value)}
+      />
+      <div className="checkin-goal-builder">
+        <p className="prop-label">Goals for next check-in</p>
+        {goals.length > 0 && (
+          <ul className="goal-list">
+            {goals.map((g, i) => (
+              <li key={`${g}-${i}`} className="goal-row goal-pending">
+                <span className="goal-text">{g}</span>
+                <button type="button" className="icon-btn" aria-label={`Remove goal: ${g}`}
+                  onClick={() => setGoals((cur) => cur.filter((_, idx) => idx !== i))}>✕</button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="goal-input-row">
+          <input
+            type="text"
+            placeholder="Add a goal…"
+            value={goalInput}
+            onChange={(e) => setGoalInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addGoal() } }}
+          />
+          <button type="button" className="btn btn-ghost btn-sm" onClick={addGoal} disabled={!goalInput.trim()}>Add</button>
+        </div>
+      </div>
+      <div className="modal-actions">
+        <button type="button" className="btn btn-primary" onClick={() => void save()} disabled={!canSave || isSaving}>
+          {isSaving ? 'Saving…' : 'Save check-in'}
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function TeamCheckins({
+  team, teamName, roster, tasks,
+}: {
+  team: TeamId
+  teamName: string
+  roster: RosterUser[]
+  tasks: Task[]
+}) {
+  const [checkins, setCheckins] = useState<Checkin[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [selectedId, setSelectedId] = useState('')
+
+  const students = roster.filter((u) => u.team === team && u.role === 'student')
+  const selected = students.find((s) => s.id === selectedId) ?? students[0] ?? null
+
+  useEffect(() => {
+    let isActive = true
+    async function load() {
+      try {
+        setIsLoading(true); setError('')
+        const data = await fetchTeamCheckins(team)
+        if (isActive) setCheckins(data)
+      } catch (err) {
+        if (isActive) setError(err instanceof Error ? err.message : 'Could not load check-ins.')
+      } finally {
+        if (isActive) setIsLoading(false)
+      }
+    }
+    void load()
+    return () => { isActive = false }
+  }, [team])
+
+  const entries = selected ? checkins.filter((c) => c.subjectUserId === selected.id) : []
+  const openCards = selected ? tasks.filter((t) => t.assigneeUserId === selected.id && t.cardStatus !== 'done') : []
+
+  function lastCheckinDate(studentId: string): string | null {
+    const entry = checkins.find((c) => c.subjectUserId === studentId)
+    return entry ? entry.checkinDate : null
+  }
+
+  async function handleCreate(notes: string, goals: string[]): Promise<boolean> {
+    if (!selected) return false
+    setError('')
+    try {
+      const created = await createCheckin({ subjectUserId: selected.id, notes, goals })
+      setCheckins((cur) => [created, ...cur])
+      return true
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save check-in.')
+      return false
+    }
+  }
+
+  function handleSetGoalStatus(goalId: string, status: GoalStatus) {
+    setError('')
+    void updateCheckinGoalStatus(goalId, status)
+      .then((updated) => {
+        setCheckins((cur) => cur.map((c) => ({
+          ...c,
+          goals: c.goals.map((g) => (g.id === updated.id ? updated : g)),
+        })))
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : 'Could not update goal.'))
+  }
+
+  async function handleSaveNotes(checkinId: string, notes: string): Promise<boolean> {
+    setError('')
+    try {
+      const updated = await updateCheckinNotes(checkinId, notes)
+      setCheckins((cur) => cur.map((c) => (c.id === updated.id ? updated : c)))
+      return true
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save notes.')
+      return false
+    }
+  }
+
+  if (students.length === 0) {
+    return <p className="quiet-text page">No students on {teamName} yet — assign roles and teams from the Admin tab.</p>
+  }
+
+  return (
+    <div className="pm-notes-layout">
+      <aside className="pm-list panel">
+        <p className="pm-group-label">{teamName} students</p>
+        {students.map((student) => {
+          const last = lastCheckinDate(student.id)
+          return (
+            <button
+              key={student.id}
+              type="button"
+              className={`pm-row ${selected?.id === student.id ? 'active' : ''}`}
+              onClick={() => setSelectedId(student.id)}
+            >
+              <span className="pm-row-title">{student.displayName}</span>
+              <span className="pm-row-sub">{last ? `Last check-in ${formatShortDate(last)}` : 'No check-ins yet'}</span>
+            </button>
+          )
+        })}
+      </aside>
+
+      <div className="checkin-main">
+        {error && <p className="error-banner">{error}</p>}
+        {selected && (
+          <>
+            {openCards.length > 0 && (
+              <div className="checkin-context">
+                <span className="prop-label">Open cards</span>
+                {openCards.map((t) => (
+                  <span key={t.id} className="checkin-card-chip">
+                    <span className={`col-dot col-dot-${t.cardStatus}`} />
+                    {t.title}
+                  </span>
+                ))}
+              </div>
+            )}
+            <CheckinComposer key={selected.id} subjectName={selected.displayName} onCreate={handleCreate} />
+            {isLoading ? (
+              <p className="quiet-text">Loading check-ins…</p>
+            ) : entries.length === 0 ? (
+              <p className="quiet-text">No check-ins for {selected.displayName} yet — the first one starts the record.</p>
+            ) : (
+              entries.map((entry, i) => (
+                <CheckinEntry
+                  key={entry.id}
+                  entry={entry}
+                  isLatest={i === 0}
+                  canEdit
+                  onSetGoalStatus={handleSetGoalStatus}
+                  onSaveNotes={handleSaveNotes}
+                />
+              ))
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function MyCheckins() {
+  const [checkins, setCheckins] = useState<Checkin[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+
+  useEffect(() => {
+    let isActive = true
+    async function load() {
+      try {
+        const data = await fetchMyCheckins()
+        if (isActive) setCheckins(data)
+      } finally {
+        if (isActive) setIsLoading(false)
+      }
+    }
+    void load()
+    return () => { isActive = false }
+  }, [])
+
+  return (
+    <div className="page checkin-mine">
+      {isLoading ? (
+        <p className="quiet-text">Loading check-ins…</p>
+      ) : checkins.length === 0 ? (
+        <p className="quiet-text">No check-ins yet — your PM will log notes and goals for you here after your next 1:1.</p>
+      ) : (
+        checkins.map((entry, i) => (
+          <CheckinEntry key={entry.id} entry={entry} isLatest={i === 0} canEdit={false} />
+        ))
+      )}
+    </div>
+  )
+}
+
 // ── AdminPanel ────────────────────────────────────────────────────────────────
 
 function AdminPanel({ teamNames }: { teamNames: Record<TeamId, string> }) {
@@ -1229,6 +1585,7 @@ function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [myTasksOnly, setMyTasksOnly] = useState(false)
   const [dashboardTeam, setDashboardTeam] = useState<TeamId>('team1')
+  const [checkinTeam, setCheckinTeam] = useState<TeamId>('team1')
   const [selectedCardId, setSelectedCardId] = useState<Task['id'] | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
 
@@ -1384,7 +1741,9 @@ function App() {
   }
 
   const canSeeDashboard = authUser.isAdmin || (authUser.role === 'pm' && Boolean(authUser.team))
+  const canManageCheckins = canSeeDashboard
   const dashboardTeamResolved: TeamId = authUser.isAdmin ? dashboardTeam : (authUser.team ?? 'team1')
+  const checkinTeamResolved: TeamId = authUser.isAdmin ? checkinTeam : (authUser.team ?? 'team1')
   const isBoardView = activeTab === 'team1' || activeTab === 'team2'
   const selectedCard = selectedCardId === null ? null : tasks.find((t) => t.id === selectedCardId) ?? null
 
@@ -1392,12 +1751,14 @@ function App() {
     activeTab === 'qna' ? 'Q&A'
     : activeTab === 'dashboard' ? `${teamNames[dashboardTeamResolved]} Dashboard`
     : activeTab === 'notes' ? `${authUser.team ? teamNames[authUser.team] : ''} Notes`
+    : activeTab === 'checkins' ? (canManageCheckins ? `${teamNames[checkinTeamResolved]} Check-ins` : 'My check-ins')
     : activeTab === 'admin' ? 'Manage roles'
     : `${teamNames[activeTab]} Board`
 
   const viewEyebrow =
     activeTab === 'qna' ? 'Forum'
     : activeTab === 'dashboard' || activeTab === 'notes' ? 'PM view'
+    : activeTab === 'checkins' ? (canManageCheckins ? 'PM view' : 'You')
     : activeTab === 'admin' ? 'Admin'
     : 'Board'
 
@@ -1414,11 +1775,17 @@ function App() {
             onClick={() => selectTab('team2')}
             onRename={(n) => setTeamNames((cur) => ({ ...cur, team2: n }))} />
           <NavItem icon="qna" label="Q&A" active={activeTab === 'qna'} onClick={() => selectTab('qna')} />
+          {!canManageCheckins && (
+            <NavItem icon="checkins" label="My Check-ins" active={activeTab === 'checkins'} onClick={() => selectTab('checkins')} />
+          )}
           {(canSeeDashboard || (authUser.role === 'pm' && authUser.team)) && (
             <p className="nav-eyebrow">Manage</p>
           )}
           {canSeeDashboard && (
             <NavItem icon="dashboard" label="Dashboard" active={activeTab === 'dashboard'} onClick={() => selectTab('dashboard')} />
+          )}
+          {canManageCheckins && (
+            <NavItem icon="checkins" label="Check-ins" active={activeTab === 'checkins'} onClick={() => selectTab('checkins')} />
           )}
           {authUser.role === 'pm' && authUser.team && (
             <NavItem icon="notes" label="PM Notes" active={activeTab === 'notes'} onClick={() => selectTab('notes')} />
@@ -1460,6 +1827,17 @@ function App() {
                 ))}
               </div>
             )}
+            {activeTab === 'checkins' && authUser.isAdmin && (
+              <div className="segmented">
+                {(['team1', 'team2'] as TeamId[]).map((tid) => (
+                  <label key={tid} className={`segment ${checkinTeam === tid ? 'selected' : ''}`}>
+                    <input type="radio" name="checkin-team"
+                      checked={checkinTeam === tid} onChange={() => setCheckinTeam(tid)} />
+                    {teamNames[tid]}
+                  </label>
+                ))}
+              </div>
+            )}
             {isBoardView && (
               <>
                 <button
@@ -1493,6 +1871,18 @@ function App() {
               teamName={teamNames[dashboardTeamResolved]}
               tasks={dashboardTeamResolved === 'team1' ? team1Tasks : team2Tasks}
             />
+          ) : activeTab === 'checkins' ? (
+            canManageCheckins ? (
+              <TeamCheckins
+                key={checkinTeamResolved}
+                team={checkinTeamResolved}
+                teamName={teamNames[checkinTeamResolved]}
+                roster={roster}
+                tasks={checkinTeamResolved === 'team1' ? team1Tasks : team2Tasks}
+              />
+            ) : (
+              <MyCheckins />
+            )
           ) : activeTab === 'admin' && authUser.isAdmin ? (
             <AdminPanel teamNames={teamNames} />
           ) : activeTab === 'qna' ? (

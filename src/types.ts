@@ -1,5 +1,5 @@
 export type TeamId = 'team1' | 'team2'
-export type TabId = 'team1' | 'team2' | 'qna' | 'notes' | 'dashboard' | 'admin'
+export type TabId = 'team1' | 'team2' | 'qna' | 'notes' | 'dashboard' | 'admin' | 'checkins'
 export type Role = 'student' | 'pm'
 export type CardStatus = 'started' | 'flowing' | 'done'
 export type Priority = 'low' | 'medium' | 'high'
@@ -53,6 +53,26 @@ export interface CardComment {
   authorId: string
   authorName: string
   authorAvatarUrl: string | null
+}
+
+export type GoalStatus = 'pending' | 'met' | 'missed'
+
+export interface CheckinGoal {
+  id: string
+  text: string
+  status: GoalStatus
+}
+
+export interface Checkin {
+  id: string
+  team: TeamId
+  subjectUserId: string
+  subjectName: string
+  authorName: string
+  checkinDate: string
+  notes: string
+  createdAt: string
+  goals: CheckinGoal[]
 }
 
 export interface RosterUser {
