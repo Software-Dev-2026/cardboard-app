@@ -114,11 +114,11 @@ async function handleApi(req, res, url) {
     return
   }
 
-  const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})$/i)
-  if (adminUserMatch && req.method === 'PATCH') {
+  const adminMembershipsMatch = url.pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})\/memberships$/i)
+  if (adminMembershipsMatch && req.method === 'PUT') {
     await requireAdmin(req)
     const body = await readJson(req)
-    const updated = await updateUserRoleTeam(adminUserMatch[1], body)
+    const updated = await updateUserMemberships(adminMembershipsMatch[1], body)
     if (!updated) {
       sendJson(res, 404, { error: 'User not found.' })
       return
@@ -129,17 +129,17 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === '/api/pm-notes' && req.method === 'GET') {
     const user = await requireCurrentUser(req)
-    if (user.role !== 'pm' || !user.team) throw new HttpError(403, 'PM access required.')
-    const notes = await listPmNotes(user)
+    const team = resolvePmNotesTeam(user, url.searchParams.get('team'))
+    const notes = await listPmNotes(user, team)
     sendJson(res, 200, notes)
     return
   }
 
   if (url.pathname === '/api/pm-notes' && req.method === 'PUT') {
     const user = await requireCurrentUser(req)
-    if (user.role !== 'pm' || !user.team) throw new HttpError(403, 'PM access required.')
     const body = await readJson(req)
-    const notes = await savePmNotes(user, body)
+    const team = resolvePmNotesTeam(user, body.team)
+    const notes = await savePmNotes(user, team, body)
     sendJson(res, 200, notes)
     return
   }
@@ -683,6 +683,24 @@ async function ensureSchema() {
       add column if not exists project_slug text references cardboard_projects(slug)
   `
 
+  // A user can belong to several teams, with a role per team ("PM of Team 2,
+  // plain member of Dixie Tech App"). Replaces the single role/team pair on
+  // cardboard_users.
+  await sql`
+    create table if not exists cardboard_team_members (
+      user_id uuid not null references cardboard_users(id) on delete cascade,
+      team_slug text not null references cardboard_teams(slug) on update cascade on delete cascade,
+      role text not null default 'member' check (role in ('member', 'pm')),
+      created_at timestamptz not null default now(),
+      primary key (user_id, team_slug)
+    )
+  `
+
+  await sql`
+    create index if not exists cardboard_team_members_team_idx
+      on cardboard_team_members (team_slug, role)
+  `
+
   await sql`alter table cardboard_users drop constraint if exists cardboard_users_team_check`
   await sql`alter table cardboard_cards drop constraint if exists cardboard_cards_team_check`
   await sql`alter table cardboard_card_notes drop constraint if exists cardboard_card_notes_team_check`
@@ -726,6 +744,21 @@ async function ensureSchema() {
 
   await sql`
     update cardboard_teams set project_slug = 'stand-up' where project_slug is null
+  `
+
+  // One-time migration of the legacy single role/team pair into memberships.
+  // Clearing the legacy columns afterwards makes this a no-op on later boots,
+  // so removed memberships don't resurrect.
+  await sql`
+    insert into cardboard_team_members (user_id, team_slug, role)
+    select id, team, case when role = 'pm' then 'pm' else 'member' end
+    from cardboard_users
+    where team is not null and team in (select slug from cardboard_teams)
+    on conflict (user_id, team_slug) do nothing
+  `
+
+  await sql`
+    update cardboard_users set team = null, role = 'student' where team is not null
   `
 
   return classroom
@@ -1083,73 +1116,96 @@ async function createCardComment(cardId, body, user) {
 }
 
 async function listRoster() {
-  const rows = await sql`
-    select id, display_name, github_login, role, team
-    from cardboard_users
-    order by display_name asc
-  `
+  const [rows, memberRows] = await Promise.all([
+    sql`select id, display_name, github_login from cardboard_users order by display_name asc`,
+    sql`select user_id, team_slug, role from cardboard_team_members order by created_at`,
+  ])
 
   return rows.map((row) => ({
     id: row.id,
     displayName: row.display_name,
     githubLogin: row.github_login,
-    role: row.role,
-    team: row.team,
+    memberships: memberRows
+      .filter((m) => m.user_id === row.id)
+      .map((m) => ({ team: m.team_slug, role: m.role })),
   }))
 }
 
-async function updateUserRoleTeam(userId, body) {
-  const role = body.role === 'pm' ? 'pm' : 'student'
-  const team = body.team ? await requireTeamSlug(body.team) : null
-  if (role === 'pm' && !team) throw new HttpError(400, 'PM must be assigned a team.')
-
-  const [updated] = await sql`
-    update cardboard_users
-    set role = ${role}, team = ${team}, updated_at = now()
-    where id = ${userId}
-    returning id, display_name, github_login, role, team
+// Replaces a user's full membership set: [{team, role: 'member'|'pm'}, …].
+async function updateUserMemberships(userId, body) {
+  const [existing] = await sql`
+    select id, display_name, github_login from cardboard_users where id = ${userId} limit 1
   `
+  if (!existing) return null
 
-  if (!updated) return null
+  const raw = Array.isArray(body.memberships) ? body.memberships : []
+  const seen = new Set()
+  const memberships = []
+  for (const entry of raw.slice(0, 30)) {
+    const team = await requireTeamSlug(String(entry?.team ?? ''))
+    if (seen.has(team)) continue
+    seen.add(team)
+    memberships.push({ team, role: entry?.role === 'pm' ? 'pm' : 'member' })
+  }
+
+  await sql.transaction([
+    sql`delete from cardboard_team_members where user_id = ${userId}`,
+    ...memberships.map((m) => sql`
+      insert into cardboard_team_members (user_id, team_slug, role)
+      values (${userId}, ${m.team}, ${m.role})
+    `),
+  ])
 
   return {
-    id: updated.id,
-    displayName: updated.display_name,
-    githubLogin: updated.github_login,
-    role: updated.role,
-    team: updated.team,
+    id: existing.id,
+    displayName: existing.display_name,
+    githubLogin: existing.github_login,
+    memberships,
   }
 }
 
-async function listPmNotes(user) {
+// A PM only ever reads/writes notes for a team they hold the PM role on; the
+// team comes from the request so multi-team PMs can switch between them.
+function resolvePmNotesTeam(user, requested) {
+  const pmTeams = pmTeamsOf(user)
+  if (pmTeams.length === 0) throw new HttpError(403, 'PM access required.')
+  if (requested) {
+    if (!pmTeams.includes(requested)) throw new HttpError(403, 'PM access required for this team.')
+    return requested
+  }
+  return pmTeams[0]
+}
+
+async function listPmNotes(user, team) {
   const cardRows = await sql`
     select card_id, note_text
     from cardboard_card_notes
     where user_id = ${user.id}
       and classroom_id = ${activeClassroom.id}
-      and team = ${user.team}
+      and team = ${team}
   `
   const [scratch] = await sql`
     select html
     from cardboard_scratch_notes
     where user_id = ${user.id}
       and classroom_id = ${activeClassroom.id}
-      and team = ${user.team}
+      and team = ${team}
   `
 
   return {
+    team,
     notes: Object.fromEntries(cardRows.map((row) => [row.card_id, row.note_text ?? ''])),
     scratchNotes: sanitizeNoteHtml(scratch?.html ?? ''),
   }
 }
 
-async function savePmNotes(user, body) {
+async function savePmNotes(user, team, body) {
   const notes = normalizeCardNoteMap(body.notes)
   const scratchHtml = sanitizeNoteHtml(body.scratchNotes ?? '')
 
   const noteQueries = Object.entries(notes).map(([cardId, noteText]) => sql`
     insert into cardboard_card_notes (user_id, classroom_id, team, card_id, note_text, updated_at)
-    values (${user.id}, ${activeClassroom.id}, ${user.team}, ${cardId}, ${noteText}, now())
+    values (${user.id}, ${activeClassroom.id}, ${team}, ${cardId}, ${noteText}, now())
     on conflict (user_id, classroom_id, team, card_id) do update
       set note_text = excluded.note_text, updated_at = now()
   `)
@@ -1158,13 +1214,13 @@ async function savePmNotes(user, body) {
     ...noteQueries,
     sql`
       insert into cardboard_scratch_notes (user_id, classroom_id, team, html, updated_at)
-      values (${user.id}, ${activeClassroom.id}, ${user.team}, ${scratchHtml}, now())
+      values (${user.id}, ${activeClassroom.id}, ${team}, ${scratchHtml}, now())
       on conflict (user_id, classroom_id, team) do update
         set html = excluded.html, updated_at = now()
     `,
   ])
 
-  return listPmNotes(user)
+  return listPmNotes(user, team)
 }
 
 function startGithubLogin(req, res) {
@@ -1274,12 +1330,21 @@ async function fetchGithubJson(url, token) {
   return response.json()
 }
 
+async function membershipsOf(userId) {
+  const rows = await sql`
+    select team_slug, role from cardboard_team_members
+    where user_id = ${userId}
+    order by created_at
+  `
+  return rows.map((row) => ({ team: row.team_slug, role: row.role }))
+}
+
 async function getCurrentUser(req) {
   const sessionToken = parseCookies(req.headers.cookie).cardboard_session
   if (!sessionToken) return null
 
   const [user] = await sql`
-    select u.id, u.github_login, u.display_name, u.email, u.avatar_url, u.role, u.team
+    select u.id, u.github_login, u.display_name, u.email, u.avatar_url
     from cardboard_sessions s
     join cardboard_users u on u.id = s.user_id
     where s.token_hash = ${hashToken(sessionToken)}
@@ -1289,7 +1354,7 @@ async function getCurrentUser(req) {
 
   if (!user) return null
 
-  return userRowToPayload(user)
+  return userRowToPayload(user, await membershipsOf(user.id))
 }
 
 async function updateCurrentUser(user, body) {
@@ -1301,16 +1366,20 @@ async function updateCurrentUser(user, body) {
     set display_name = ${displayName},
         updated_at = now()
     where id = ${user.id}
-    returning id, github_login, display_name, email, avatar_url, role, team
+    returning id, github_login, display_name, email, avatar_url
   `
 
-  return userRowToPayload(updated)
+  return userRowToPayload(updated, await membershipsOf(updated.id))
 }
 
 // ── Check-ins ────────────────────────────────────────────────────────────────
 
+function pmTeamsOf(user) {
+  return (user.memberships ?? []).filter((m) => m.role === 'pm').map((m) => m.team)
+}
+
 function requireTeamPmOrAdmin(user, team) {
-  if (!user.isAdmin && !(user.role === 'pm' && user.team === team)) {
+  if (!user.isAdmin && !pmTeamsOf(user).includes(team)) {
     throw new HttpError(403, 'PM or admin access required for this team.')
   }
 }
@@ -1365,11 +1434,15 @@ function goalRowToPayload(row) {
 async function createCheckin(body, user) {
   const subjectId = String(body.subjectUserId ?? '')
   if (!UUID_RE.test(subjectId)) throw new HttpError(400, 'A subject is required.')
+  const team = await requireTeamSlug(String(body.team ?? ''))
   const [subject] = await sql`
-    select id, display_name, team from cardboard_users where id = ${subjectId} limit 1
+    select u.id, u.display_name from cardboard_users u
+    join cardboard_team_members tm on tm.user_id = u.id and tm.team_slug = ${team}
+    where u.id = ${subjectId}
+    limit 1
   `
-  if (!subject || !subject.team) throw new HttpError(400, 'Subject must be on a team.')
-  requireTeamPmOrAdmin(user, subject.team)
+  if (!subject) throw new HttpError(400, 'Subject must be a member of that team.')
+  requireTeamPmOrAdmin(user, team)
 
   const notes = normalizeText(body.notes)
   const goalTexts = (Array.isArray(body.goals) ? body.goals : [])
@@ -1379,7 +1452,7 @@ async function createCheckin(body, user) {
 
   const [created] = await sql`
     insert into cardboard_checkins (classroom_id, team, subject_user_id, author_user_id, notes)
-    values (${activeClassroom.id}, ${subject.team}, ${subject.id}, ${user.id}, ${notes})
+    values (${activeClassroom.id}, ${team}, ${subject.id}, ${user.id}, ${notes})
     returning *
   `
   const goals = []
@@ -1442,15 +1515,14 @@ async function updateCheckinGoal(goalId, body, user) {
   return goalRowToPayload(updated)
 }
 
-function userRowToPayload(row) {
+function userRowToPayload(row, memberships) {
   return {
     id: row.id,
     githubLogin: row.github_login,
     displayName: row.display_name,
     email: row.email,
     avatarUrl: row.avatar_url,
-    role: row.role,
-    team: row.team,
+    memberships: memberships ?? row.memberships ?? [],
     isAdmin: isAdminLogin(row.github_login),
   }
 }

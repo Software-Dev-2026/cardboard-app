@@ -1,4 +1,4 @@
-import type { CardComment, CardEvent, Checkin, CheckinGoal, GoalStatus, Project, QnaAnswer, QnaQuestion, Role, RosterUser, Task, Team, TeamActivityEvent, TeamId } from '../types'
+import type { CardComment, CardEvent, Checkin, CheckinGoal, GoalStatus, Membership, Project, QnaAnswer, QnaQuestion, RosterUser, Task, Team, TeamActivityEvent, TeamId } from '../types'
 
 type CardPayload = Omit<Task, 'id'> & { id: string }
 
@@ -8,8 +8,7 @@ export interface AuthUser {
   displayName: string
   email: string | null
   avatarUrl: string | null
-  role: Role
-  team: TeamId | null
+  memberships: Membership[]
   isAdmin: boolean
 }
 
@@ -67,6 +66,7 @@ interface TeamActivityResponse {
 }
 
 export interface PmNotesPayload {
+  team?: TeamId
   notes: Record<string, string>
   scratchNotes: string
 }
@@ -114,14 +114,14 @@ export async function createAnswer(questionId: string, text: string): Promise<Qn
   return data.answer
 }
 
-export async function fetchPmNotes(): Promise<PmNotesPayload> {
-  return apiRequest<PmNotesPayload>('/api/pm-notes')
+export async function fetchPmNotes(team: TeamId): Promise<PmNotesPayload> {
+  return apiRequest<PmNotesPayload>(`/api/pm-notes?team=${encodeURIComponent(team)}`)
 }
 
-export async function savePmNotes(payload: PmNotesPayload): Promise<PmNotesPayload> {
+export async function savePmNotes(team: TeamId, payload: PmNotesPayload): Promise<PmNotesPayload> {
   return apiRequest<PmNotesPayload>('/api/pm-notes', {
     method: 'PUT',
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, team }),
   })
 }
 
@@ -135,10 +135,10 @@ export async function fetchAdminUsers(): Promise<RosterUser[]> {
   return data.users
 }
 
-export async function updateUserRoleTeam(userId: string, role: Role, team: TeamId | null): Promise<RosterUser> {
-  const data = await apiRequest<UserResponse>(`/api/admin/users/${userId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ role, team }),
+export async function updateUserMemberships(userId: string, memberships: Membership[]): Promise<RosterUser> {
+  const data = await apiRequest<UserResponse>(`/api/admin/users/${userId}/memberships`, {
+    method: 'PUT',
+    body: JSON.stringify({ memberships }),
   })
   return data.user
 }
@@ -253,7 +253,7 @@ export async function fetchMyCheckins(): Promise<Checkin[]> {
   return data.checkins
 }
 
-export async function createCheckin(payload: { subjectUserId: string; notes: string; goals: string[] }): Promise<Checkin> {
+export async function createCheckin(payload: { subjectUserId: string; team: TeamId; notes: string; goals: string[] }): Promise<Checkin> {
   const data = await apiRequest<CheckinResponse>('/api/checkins', {
     method: 'POST',
     body: JSON.stringify(payload),

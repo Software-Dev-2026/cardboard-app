@@ -19,7 +19,13 @@ export interface Project {
   archived: boolean
   orderIndex: number
 }
-export type Role = 'student' | 'pm'
+// Per-team role: a user can be PM of one team and a plain member of another.
+export type MemberRole = 'member' | 'pm'
+
+export interface Membership {
+  team: TeamId
+  role: MemberRole
+}
 export type CardStatus = 'started' | 'flowing' | 'done'
 export type Priority = 'low' | 'medium' | 'high'
 
@@ -98,6 +104,5 @@ export interface RosterUser {
   id: string
   displayName: string
   githubLogin: string
-  role: Role
-  team: TeamId | null
+  memberships: Membership[]
 }

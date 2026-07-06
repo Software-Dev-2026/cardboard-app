@@ -1949,3 +1949,80 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Memberships editor ───────────────────────────────────────────────────── */
+
+.memberships-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.membership-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  padding: 2px 4px 2px 10px;
+  font-size: 0.78rem;
+}
+
+.membership-team {
+  font-weight: 600;
+}
+
+.membership-role {
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  padding: 1px 8px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  transition: all 100ms ease;
+}
+
+.membership-role:hover {
+  color: var(--ink);
+}
+
+.membership-role.is-pm {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.membership-remove {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.66rem;
+  padding: 2px 5px;
+  border-radius: 50%;
+}
+
+.membership-remove:hover {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.membership-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.membership-add select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 3px 6px;
+  font-size: 0.76rem;
+  color: var(--ink-soft);
+}

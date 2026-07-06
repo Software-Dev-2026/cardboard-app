@@ -6,12 +6,12 @@ import {
   fetchAdminUsers, fetchCardComments, fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins, fetchPmNotes,
   fetchQuestions, fetchRoster, fetchTeamActivity, fetchTeamCheckins, fetchTeams, logout, savePmNotes,
   updateCard, updateCheckinGoalStatus, updateCheckinNotes, updateDefaultName, updateProject, updateTeam,
-  updateUserRoleTeam,
+  updateUserMemberships,
 } from './utils/api'
 import type { AuthUser } from './utils/api'
 import type {
-  CardComment, CardEvent, CardStatus, Checkin, GoalStatus, Priority, Project, QnaQuestion, Role, RosterUser,
-  TabId, Task, Team, TeamActivityEvent, TeamId,
+  CardComment, CardEvent, CardStatus, Checkin, GoalStatus, MemberRole, Membership, Priority, Project, QnaQuestion,
+  RosterUser, TabId, Task, Team, TeamActivityEvent, TeamId,
 } from './types'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -265,10 +265,11 @@ function SidebarUser({
   const [isSaving, setIsSaving] = useState(false)
   const [nameError, setNameError] = useState('')
 
+  const pmMemberships = user.memberships.filter((m) => m.role === 'pm')
   const roleChip = user.isAdmin
     ? 'Admin'
-    : user.role === 'pm'
-      ? `PM · ${user.team ? (teamNames[user.team] ?? user.team) : 'No team'}`
+    : pmMemberships.length > 0
+      ? `PM · ${pmMemberships.map((m) => teamNames[m.team] ?? m.team).join(', ')}`
       : 'Student'
 
   async function saveDefaultName() {
@@ -870,13 +871,13 @@ function QnaCard({
 }
 
 // ── PmNotes ───────────────────────────────────────────────────────────────────
-// A PM only ever sees and edits their own team's notes — team is the PM's own
-// `user.team`, never a free choice, closing the hole where the old manager1/
-// manager2 toggle let any signed-in user write either manager's notes.
+// The team must be one the viewer holds the PM role on — the server rejects
+// anything else, and multi-team PMs switch teams via the view-bar toggle.
 
 function PmNotes({
-  tasks, teamName,
+  team, tasks, teamName,
 }: {
+  team: TeamId
   tasks: Task[]
   teamName: string
 }) {
@@ -897,7 +898,7 @@ function PmNotes({
     let isActive = true
     async function loadSavedNotes() {
       try {
-        const saved = await fetchPmNotes()
+        const saved = await fetchPmNotes(team)
         if (!isActive) return
         setNotes(saved.notes)
         setScratchNotes(saved.scratchNotes)
@@ -908,7 +909,7 @@ function PmNotes({
     }
     void loadSavedNotes()
     return () => { isActive = false }
-  }, [])
+  }, [team])
 
   // The scratchpad div is uncontrolled while typing (React never rewrites its
   // HTML, so the caret stays put). Seed its content only when the view opens
@@ -925,12 +926,12 @@ function PmNotes({
     if (!savedNotesLoaded) return
     const timeout = window.setTimeout(() => {
       setSaveState('saving')
-      savePmNotes({ notes, scratchNotes })
+      savePmNotes(team, { notes, scratchNotes })
         .then(() => setSaveState('saved'))
         .catch(() => setSaveState('idle'))
     }, 650)
     return () => window.clearTimeout(timeout)
-  }, [notes, scratchNotes, savedNotesLoaded])
+  }, [team, notes, scratchNotes, savedNotesLoaded])
 
   function formatScratch(command: 'bold' | 'italic' | 'underline') {
     scratchRef.current?.focus()
@@ -1334,7 +1335,7 @@ function TeamCheckins({
   const [error, setError] = useState('')
   const [selectedId, setSelectedId] = useState('')
 
-  const students = roster.filter((u) => u.team === team && u.role === 'student')
+  const students = roster.filter((u) => u.memberships.some((m) => m.team === team))
   const selected = students.find((s) => s.id === selectedId) ?? students[0] ?? null
 
   useEffect(() => {
@@ -1366,7 +1367,7 @@ function TeamCheckins({
     if (!selected) return false
     setError('')
     try {
-      const created = await createCheckin({ subjectUserId: selected.id, notes, goals })
+      const created = await createCheckin({ subjectUserId: selected.id, team, notes, goals })
       setCheckins((cur) => [created, ...cur])
       return true
     } catch (err) {
@@ -1406,7 +1407,7 @@ function TeamCheckins({
   return (
     <div className="pm-notes-layout">
       <aside className="pm-list panel">
-        <p className="pm-group-label">{teamName} students</p>
+        <p className="pm-group-label">{teamName} members</p>
         {students.map((student) => {
           const last = lastCheckinDate(student.id)
           return (
@@ -1604,6 +1605,69 @@ function AddRow({
   )
 }
 
+// One user's team memberships: chips with a per-team role toggle and remove,
+// plus a row to add them to another team.
+function MembershipsEditor({
+  person, teams, onChange,
+}: {
+  person: RosterUser
+  teams: Team[]
+  onChange: (memberships: Membership[]) => void
+}) {
+  const [addTeam, setAddTeam] = useState('')
+
+  const availableTeams = teams.filter(
+    (t) => !t.archived && !person.memberships.some((m) => m.team === t.slug),
+  )
+  const nameOf = (slug: string) => teams.find((t) => t.slug === slug)?.name ?? slug
+
+  function setRole(team: TeamId, role: MemberRole) {
+    onChange(person.memberships.map((m) => (m.team === team ? { ...m, role } : m)))
+  }
+
+  function remove(team: TeamId) {
+    onChange(person.memberships.filter((m) => m.team !== team))
+  }
+
+  function add() {
+    if (!addTeam) return
+    onChange([...person.memberships, { team: addTeam, role: 'member' }])
+    setAddTeam('')
+  }
+
+  return (
+    <div className="memberships-cell">
+      {person.memberships.length === 0 && <span className="quiet-text">No teams</span>}
+      {person.memberships.map((m) => (
+        <span key={m.team} className="membership-chip">
+          <span className="membership-team">{nameOf(m.team)}</span>
+          <button
+            type="button"
+            className={`membership-role ${m.role === 'pm' ? 'is-pm' : ''}`}
+            title={m.role === 'pm' ? 'Demote to member' : 'Promote to PM of this team'}
+            onClick={() => setRole(m.team, m.role === 'pm' ? 'member' : 'pm')}
+          >
+            {m.role === 'pm' ? 'PM' : 'Member'}
+          </button>
+          <button type="button" className="membership-remove" aria-label={`Remove from ${nameOf(m.team)}`}
+            onClick={() => remove(m.team)}>✕</button>
+        </span>
+      ))}
+      {availableTeams.length > 0 && (
+        <span className="membership-add">
+          <select value={addTeam} onChange={(e) => setAddTeam(e.target.value)} aria-label={`Add ${person.displayName} to a team`}>
+            <option value="">Add to team…</option>
+            {availableTeams.map((t) => (
+              <option key={t.slug} value={t.slug}>{t.name}</option>
+            ))}
+          </select>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={add} disabled={!addTeam}>Add</button>
+        </span>
+      )}
+    </div>
+  )
+}
+
 function AdminPanel({
   teams, projects, onCreateTeam, onUpdateTeam, onCreateProject, onUpdateProject,
 }: {
@@ -1640,10 +1704,10 @@ function AdminPanel({
     return () => { isActive = false }
   }, [])
 
-  async function handleRoleChange(userId: string, role: Role, team: TeamId | null) {
+  async function handleMembershipsChange(userId: string, memberships: Membership[]) {
     setError('')
     try {
-      const updated = await updateUserRoleTeam(userId, role, team)
+      const updated = await updateUserMemberships(userId, memberships)
       setUsers((cur) => cur.map((u) => (u.id === userId ? updated : u)))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not update user.')
@@ -1712,7 +1776,7 @@ function AdminPanel({
         <div className="panel table-panel">
           <table className="admin-table">
             <thead>
-              <tr><th>Name</th><th>GitHub</th><th>Role</th><th>Team</th></tr>
+              <tr><th>Name</th><th>GitHub</th><th>Teams &amp; roles</th></tr>
             </thead>
             <tbody>
               {users.map((person) => (
@@ -1725,20 +1789,11 @@ function AdminPanel({
                   </td>
                   <td className="admin-login">@{person.githubLogin}</td>
                   <td>
-                    <select value={person.role}
-                      onChange={(e) => void handleRoleChange(person.id, e.target.value as Role, person.team)}>
-                      <option value="student">Student</option>
-                      <option value="pm">PM</option>
-                    </select>
-                  </td>
-                  <td>
-                    <select value={person.team ?? ''}
-                      onChange={(e) => void handleRoleChange(person.id, person.role, e.target.value ? (e.target.value as TeamId) : null)}>
-                      <option value="">No team</option>
-                      {teams.filter((t) => !t.archived || t.slug === person.team).map((t) => (
-                        <option key={t.slug} value={t.slug}>{t.name}{t.archived ? ' (archived)' : ''}</option>
-                      ))}
-                    </select>
+                    <MembershipsEditor
+                      person={person}
+                      teams={teams}
+                      onChange={(memberships) => void handleMembershipsChange(person.id, memberships)}
+                    />
                   </td>
                 </tr>
               ))}
@@ -1768,6 +1823,7 @@ function App() {
   const [myTasksOnly, setMyTasksOnly] = useState(false)
   const [dashboardTeam, setDashboardTeam] = useState<TeamId>('')
   const [checkinTeam, setCheckinTeam] = useState<TeamId>('')
+  const [notesTeam, setNotesTeam] = useState<TeamId>('')
   const [selectedCardId, setSelectedCardId] = useState<Task['id'] | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
 
@@ -1784,10 +1840,11 @@ function App() {
         if (!isActive) return
         setAuthUser(data.user)
         setGithubConfigured(data.githubConfigured)
-        // Admins land on their own team's Dashboard/Check-ins, not always team1.
-        if (data.user?.team) {
-          setDashboardTeam(data.user.team)
-          setCheckinTeam(data.user.team)
+        // Land on the user's own (first PM) team in Dashboard/Check-ins.
+        const firstPmTeam = data.user?.memberships.find((m) => m.role === 'pm')?.team
+        if (firstPmTeam) {
+          setDashboardTeam(firstPmTeam)
+          setCheckinTeam(firstPmTeam)
         }
       } catch {
         if (isActive) setGithubConfigured(false)
@@ -1993,22 +2050,27 @@ function App() {
     )
   }
 
-  const canSeeDashboard = authUser.isAdmin || (authUser.role === 'pm' && Boolean(authUser.team))
+  const pmTeams = authUser.memberships.filter((m) => m.role === 'pm').map((m) => m.team)
+  const isPm = pmTeams.length > 0
+  const canSeeDashboard = authUser.isAdmin || isPm
   const canManageCheckins = canSeeDashboard
   const firstTeamSlug = visibleTeams[0]?.slug ?? ''
+  // Admins pick among all visible teams; PMs among the teams they run.
   const resolvePickedTeam = (picked: TeamId): TeamId => {
-    if (!authUser.isAdmin) return authUser.team ?? firstTeamSlug
-    return teams.some((t) => t.slug === picked) ? picked : firstTeamSlug
+    const candidates = authUser.isAdmin ? visibleTeams.map((t) => t.slug) : pmTeams
+    if (candidates.includes(picked)) return picked
+    return candidates[0] ?? firstTeamSlug
   }
   const dashboardTeamResolved: TeamId = resolvePickedTeam(dashboardTeam)
   const checkinTeamResolved: TeamId = resolvePickedTeam(checkinTeam)
+  const notesTeamResolved: TeamId = pmTeams.includes(notesTeam) ? notesTeam : (pmTeams[0] ?? '')
   const isBoardView = teams.some((t) => t.slug === activeTab)
   const selectedCard = selectedCardId === null ? null : tasks.find((t) => t.id === selectedCardId) ?? null
 
   const viewTitle =
     activeTab === 'qna' ? 'Q&A'
     : activeTab === 'dashboard' ? `${teamNames[dashboardTeamResolved] ?? ''} Dashboard`
-    : activeTab === 'notes' ? `${authUser.team ? (teamNames[authUser.team] ?? authUser.team) : ''} Notes`
+    : activeTab === 'notes' ? `${teamNames[notesTeamResolved] ?? notesTeamResolved} Notes`
     : activeTab === 'checkins' ? (canManageCheckins ? `${teamNames[checkinTeamResolved] ?? ''} Check-ins` : 'My check-ins')
     : activeTab === 'admin' ? 'Manage roles'
     : `${teamNames[activeTab] ?? activeTab} Board`
@@ -2064,7 +2126,7 @@ function App() {
           {!canManageCheckins && (
             <NavItem icon="checkins" label="My Check-ins" active={activeTab === 'checkins'} onClick={() => selectTab('checkins')} />
           )}
-          {(canSeeDashboard || (authUser.role === 'pm' && authUser.team)) && (
+          {canSeeDashboard && (
             <p className="nav-eyebrow">Manage</p>
           )}
           {canSeeDashboard && (
@@ -2073,7 +2135,7 @@ function App() {
           {canManageCheckins && (
             <NavItem icon="checkins" label="Check-ins" active={activeTab === 'checkins'} onClick={() => selectTab('checkins')} />
           )}
-          {authUser.role === 'pm' && authUser.team && (
+          {isPm && (
             <NavItem icon="notes" label="PM Notes" active={activeTab === 'notes'} onClick={() => selectTab('notes')} />
           )}
           {authUser.isAdmin && (
@@ -2102,28 +2164,33 @@ function App() {
             <h1 className="view-title">{viewTitle}</h1>
           </div>
           <div className="view-actions">
-            {activeTab === 'dashboard' && authUser.isAdmin && visibleTeams.length > 1 && (
-              <div className="segmented">
-                {visibleTeams.map((t) => (
-                  <label key={t.slug} className={`segment ${dashboardTeamResolved === t.slug ? 'selected' : ''}`}>
-                    <input type="radio" name="dashboard-team"
-                      checked={dashboardTeamResolved === t.slug} onChange={() => setDashboardTeam(t.slug)} />
-                    {t.name}
-                  </label>
-                ))}
-              </div>
-            )}
-            {activeTab === 'checkins' && authUser.isAdmin && visibleTeams.length > 1 && (
-              <div className="segmented">
-                {visibleTeams.map((t) => (
-                  <label key={t.slug} className={`segment ${checkinTeamResolved === t.slug ? 'selected' : ''}`}>
-                    <input type="radio" name="checkin-team"
-                      checked={checkinTeamResolved === t.slug} onChange={() => setCheckinTeam(t.slug)} />
-                    {t.name}
-                  </label>
-                ))}
-              </div>
-            )}
+            {(() => {
+              // Team switcher for the PM views: admins pick among all visible
+              // teams, PMs among the teams they run.
+              const pickerTeams = authUser.isAdmin
+                ? visibleTeams
+                : teams.filter((t) => pmTeams.includes(t.slug))
+              if (pickerTeams.length < 2) return null
+              const pickers: Partial<Record<string, [TeamId, (slug: TeamId) => void]>> = {
+                dashboard: [dashboardTeamResolved, setDashboardTeam],
+                checkins: [checkinTeamResolved, setCheckinTeam],
+                notes: [notesTeamResolved, setNotesTeam],
+              }
+              const picker = pickers[activeTab]
+              if (!picker || (activeTab === 'checkins' && !canManageCheckins)) return null
+              const [selected, setSelected] = picker
+              return (
+                <div className="segmented">
+                  {pickerTeams.map((t) => (
+                    <label key={t.slug} className={`segment ${selected === t.slug ? 'selected' : ''}`}>
+                      <input type="radio" name={`${activeTab}-team`}
+                        checked={selected === t.slug} onChange={() => setSelected(t.slug)} />
+                      {t.name}
+                    </label>
+                  ))}
+                </div>
+              )
+            })()}
             {isBoardView && (
               <>
                 <button
@@ -2145,10 +2212,12 @@ function App() {
         <div className="view-body">
           {error && <p className="error-banner">{error}</p>}
 
-          {activeTab === 'notes' && authUser.role === 'pm' && authUser.team ? (
+          {activeTab === 'notes' && isPm && notesTeamResolved ? (
             <PmNotes
-              tasks={tasksFor(authUser.team)}
-              teamName={teamNames[authUser.team] ?? authUser.team}
+              key={notesTeamResolved}
+              team={notesTeamResolved}
+              tasks={tasksFor(notesTeamResolved)}
+              teamName={teamNames[notesTeamResolved] ?? notesTeamResolved}
             />
           ) : activeTab === 'dashboard' && canSeeDashboard ? (
             <Dashboard
