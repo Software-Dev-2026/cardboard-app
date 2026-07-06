@@ -1602,6 +1602,11 @@ function App() {
         if (!isActive) return
         setAuthUser(data.user)
         setGithubConfigured(data.githubConfigured)
+        // Admins land on their own team's Dashboard/Check-ins, not always team1.
+        if (data.user?.team) {
+          setDashboardTeam(data.user.team)
+          setCheckinTeam(data.user.team)
+        }
       } catch {
         if (isActive) setGithubConfigured(false)
       } finally {
