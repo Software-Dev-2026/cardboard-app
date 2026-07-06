@@ -263,8 +263,29 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === '/api/teams' && req.method === 'GET') {
     await requireCurrentUser(req)
-    const teams = await getTeams()
-    sendJson(res, 200, { teams: teams.map(teamRowToPayload) })
+    const [teams, projects] = await Promise.all([getTeams(), getProjects()])
+    sendJson(res, 200, { teams: teams.map(teamRowToPayload), projects: projects.map(projectRowToPayload) })
+    return
+  }
+
+  if (url.pathname === '/api/projects' && req.method === 'POST') {
+    await requireAdmin(req)
+    const body = await readJson(req)
+    const project = await createProject(body)
+    sendJson(res, 201, { project })
+    return
+  }
+
+  const projectPatchMatch = url.pathname.match(/^\/api\/projects\/([a-z0-9][a-z0-9-]*)$/)
+  if (projectPatchMatch && req.method === 'PATCH') {
+    await requireAdmin(req)
+    const body = await readJson(req)
+    const project = await updateProject(projectPatchMatch[1], body)
+    if (!project) {
+      sendJson(res, 404, { error: 'Project not found.' })
+      return
+    }
+    sendJson(res, 200, { project })
     return
   }
 
@@ -646,6 +667,22 @@ async function ensureSchema() {
     )
   `
 
+  await sql`
+    create table if not exists cardboard_projects (
+      slug text primary key,
+      classroom_id uuid not null references cardboard_classrooms(id) on delete cascade,
+      name text not null,
+      archived boolean not null default false,
+      order_index integer not null default 0,
+      created_at timestamptz not null default now()
+    )
+  `
+
+  await sql`
+    alter table cardboard_teams
+      add column if not exists project_slug text references cardboard_projects(slug)
+  `
+
   await sql`alter table cardboard_users drop constraint if exists cardboard_users_team_check`
   await sql`alter table cardboard_cards drop constraint if exists cardboard_cards_team_check`
   await sql`alter table cardboard_card_notes drop constraint if exists cardboard_card_notes_team_check`
@@ -673,11 +710,22 @@ async function ensureSchema() {
     returning id, name, join_code;
   `
 
-  // Seed the legacy pair so existing team1/team2 data keeps resolving.
+  // Seed the legacy pair so existing team1/team2 data keeps resolving, and
+  // group any project-less teams under the class's "Stand-Up" project.
   await sql`
-    insert into cardboard_teams (slug, classroom_id, name, order_index)
-    values ('team1', ${classroom.id}, 'Team 1', 0), ('team2', ${classroom.id}, 'Team 2', 1)
+    insert into cardboard_projects (slug, classroom_id, name, order_index)
+    values ('stand-up', ${classroom.id}, 'Stand-Up', 0)
     on conflict (slug) do nothing
+  `
+
+  await sql`
+    insert into cardboard_teams (slug, classroom_id, name, order_index, project_slug)
+    values ('team1', ${classroom.id}, 'Team 1', 0, 'stand-up'), ('team2', ${classroom.id}, 'Team 2', 1, 'stand-up')
+    on conflict (slug) do nothing
+  `
+
+  await sql`
+    update cardboard_teams set project_slug = 'stand-up' where project_slug is null
   `
 
   return classroom
@@ -1600,7 +1648,7 @@ let teamsCache = null
 async function getTeams() {
   if (!teamsCache) {
     teamsCache = await sql`
-      select slug, name, archived, order_index from cardboard_teams
+      select slug, name, archived, order_index, project_slug from cardboard_teams
       where classroom_id = ${activeClassroom.id}
       order by order_index, created_at
     `
@@ -1609,7 +1657,7 @@ async function getTeams() {
 }
 
 function teamRowToPayload(row) {
-  return { slug: row.slug, name: row.name, archived: row.archived, orderIndex: row.order_index }
+  return { slug: row.slug, name: row.name, archived: row.archived, orderIndex: row.order_index, projectSlug: row.project_slug ?? null }
 }
 
 async function isKnownTeam(slug) {
@@ -1633,23 +1681,103 @@ async function requireTeamSlug(value) {
   throw new HttpError(400, 'Unknown team.')
 }
 
-const RESERVED_TEAM_SLUGS = new Set(['qna', 'notes', 'dashboard', 'admin', 'checkins', 'mine', 'new', 'teams'])
+let projectsCache = null
+
+async function getProjects() {
+  if (!projectsCache) {
+    projectsCache = await sql`
+      select slug, name, archived, order_index from cardboard_projects
+      where classroom_id = ${activeClassroom.id}
+      order by order_index, created_at
+    `
+  }
+  return projectsCache
+}
+
+function projectRowToPayload(row) {
+  return { slug: row.slug, name: row.name, archived: row.archived, orderIndex: row.order_index }
+}
+
+const RESERVED_TEAM_SLUGS = new Set(['qna', 'notes', 'dashboard', 'admin', 'checkins', 'mine', 'new', 'teams', 'projects'])
+
+function generateSlug(name, taken) {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'team'
+  let slug = base
+  let n = 2
+  while (RESERVED_TEAM_SLUGS.has(slug) || taken.has(slug)) {
+    slug = `${base}-${n}`
+    n += 1
+  }
+  return slug
+}
+
+// A team is visible when neither it nor its project is archived. The guards
+// below keep at least one visible team at all times so boards never vanish.
+async function countVisibleTeams({ excludeTeamSlug, excludeProjectSlug } = {}) {
+  const [teams, projects] = await Promise.all([getTeams(), getProjects()])
+  const archivedProjects = new Set(projects.filter((p) => p.archived).map((p) => p.slug))
+  if (excludeProjectSlug) archivedProjects.add(excludeProjectSlug)
+  return teams.filter((t) =>
+    !t.archived &&
+    t.slug !== excludeTeamSlug &&
+    !(t.project_slug && archivedProjects.has(t.project_slug)),
+  ).length
+}
+
+async function createProject(body) {
+  const name = normalizeText(body.name)
+  if (!name) throw new HttpError(400, 'Project name is required.')
+  const projects = await getProjects()
+  const slug = generateSlug(name, new Set(projects.map((p) => p.slug)))
+  const maxOrder = projects.reduce((max, p) => Math.max(max, p.order_index), -1)
+  const [created] = await sql`
+    insert into cardboard_projects (slug, classroom_id, name, order_index)
+    values (${slug}, ${activeClassroom.id}, ${name}, ${maxOrder + 1})
+    returning *
+  `
+  projectsCache = null
+  return projectRowToPayload(created)
+}
+
+async function updateProject(slug, body) {
+  const projects = await getProjects()
+  const existing = projects.find((p) => p.slug === slug)
+  if (!existing) return null
+  const name = 'name' in body ? normalizeText(body.name) : existing.name
+  if (!name) throw new HttpError(400, 'Project name is required.')
+  const archived = 'archived' in body ? Boolean(body.archived) : existing.archived
+  if (archived && !existing.archived) {
+    if ((await countVisibleTeams({ excludeProjectSlug: slug })) < 1) {
+      throw new HttpError(400, 'At least one team must stay visible — add another project first.')
+    }
+  }
+  const [updated] = await sql`
+    update cardboard_projects set name = ${name}, archived = ${archived}
+    where slug = ${slug} and classroom_id = ${activeClassroom.id}
+    returning *
+  `
+  projectsCache = null
+  return projectRowToPayload(updated)
+}
+
+async function resolveProjectSlug(value) {
+  const projects = await getProjects()
+  if (value && projects.some((p) => p.slug === value)) return value
+  const firstActive = projects.find((p) => !p.archived) ?? projects[0]
+  if (!firstActive) throw new HttpError(400, 'No projects exist yet.')
+  return firstActive.slug
+}
 
 async function createTeam(body) {
   const name = normalizeText(body.name)
   if (!name) throw new HttpError(400, 'Team name is required.')
   const teams = await getTeams()
-  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'team'
-  let slug = base
-  let n = 2
-  while (RESERVED_TEAM_SLUGS.has(slug) || teams.some((t) => t.slug === slug)) {
-    slug = `${base}-${n}`
-    n += 1
-  }
+  const projectSlug = await resolveProjectSlug(body.projectSlug)
+  const slug = generateSlug(name, new Set(teams.map((t) => t.slug)))
   const maxOrder = teams.reduce((max, t) => Math.max(max, t.order_index), -1)
   const [created] = await sql`
-    insert into cardboard_teams (slug, classroom_id, name, order_index)
-    values (${slug}, ${activeClassroom.id}, ${name}, ${maxOrder + 1})
+    insert into cardboard_teams (slug, classroom_id, name, order_index, project_slug)
+    values (${slug}, ${activeClassroom.id}, ${name}, ${maxOrder + 1}, ${projectSlug})
     returning *
   `
   teamsCache = null
@@ -1664,11 +1792,15 @@ async function updateTeam(slug, body) {
   if (!name) throw new HttpError(400, 'Team name is required.')
   const archived = 'archived' in body ? Boolean(body.archived) : existing.archived
   if (archived && !existing.archived) {
-    const activeCount = teams.filter((t) => !t.archived).length
-    if (activeCount <= 1) throw new HttpError(400, 'At least one team must stay active.')
+    if ((await countVisibleTeams({ excludeTeamSlug: slug })) < 1) {
+      throw new HttpError(400, 'At least one team must stay active.')
+    }
   }
+  const projectSlug = 'projectSlug' in body
+    ? await resolveProjectSlug(body.projectSlug)
+    : existing.project_slug
   const [updated] = await sql`
-    update cardboard_teams set name = ${name}, archived = ${archived}
+    update cardboard_teams set name = ${name}, archived = ${archived}, project_slug = ${projectSlug}
     where slug = ${slug} and classroom_id = ${activeClassroom.id}
     returning *
   `

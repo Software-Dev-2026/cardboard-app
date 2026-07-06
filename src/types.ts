@@ -8,6 +8,16 @@ export interface Team {
   name: string
   archived: boolean
   orderIndex: number
+  projectSlug: string | null
+}
+
+// A project groups teams — e.g. "Stand-Up" holds the class's stand-up teams,
+// and each new set of class projects gets its own named project.
+export interface Project {
+  slug: string
+  name: string
+  archived: boolean
+  orderIndex: number
 }
 export type Role = 'student' | 'pm'
 export type CardStatus = 'started' | 'flowing' | 'done'

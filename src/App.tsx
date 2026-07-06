@@ -1,16 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { DragEvent, FormEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import './App.css'
 import {
-  createAnswer, createCard, createCardComment, createCheckin, createQuestion, createTeam, fetchAdminUsers,
-  fetchCardComments, fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins, fetchPmNotes, fetchQuestions,
-  fetchRoster, fetchTeamActivity, fetchTeamCheckins, fetchTeams, logout, savePmNotes, updateCard,
-  updateCheckinGoalStatus, updateCheckinNotes, updateDefaultName, updateTeam, updateUserRoleTeam,
+  createAnswer, createCard, createCardComment, createCheckin, createProject, createQuestion, createTeam,
+  fetchAdminUsers, fetchCardComments, fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins, fetchPmNotes,
+  fetchQuestions, fetchRoster, fetchTeamActivity, fetchTeamCheckins, fetchTeams, logout, savePmNotes,
+  updateCard, updateCheckinGoalStatus, updateCheckinNotes, updateDefaultName, updateProject, updateTeam,
+  updateUserRoleTeam,
 } from './utils/api'
 import type { AuthUser } from './utils/api'
 import type {
-  CardComment, CardEvent, CardStatus, Checkin, GoalStatus, Priority, QnaQuestion, Role, RosterUser, TabId, Task,
-  Team, TeamActivityEvent, TeamId,
+  CardComment, CardEvent, CardStatus, Checkin, GoalStatus, Priority, Project, QnaQuestion, Role, RosterUser,
+  TabId, Task, Team, TeamActivityEvent, TeamId,
 } from './types'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -1496,35 +1497,61 @@ function MyCheckins() {
 
 // ── AdminPanel ────────────────────────────────────────────────────────────────
 
-function TeamManageRow({
-  team, canArchive, onUpdate,
+function InlineRenameInput({
+  value, ariaLabel, onCommit,
 }: {
-  team: Team
-  canArchive: boolean
-  onUpdate: (slug: string, patch: { name?: string; archived?: boolean }) => Promise<void>
+  value: string
+  ariaLabel: string
+  onCommit: (name: string) => void
 }) {
-  const [nameDraft, setNameDraft] = useState(team.name)
+  const [draft, setDraft] = useState(value)
 
-  function commitName() {
-    const name = nameDraft.trim()
-    if (!name || name === team.name) { setNameDraft(team.name); return }
-    void onUpdate(team.slug, { name })
+  function commit() {
+    const name = draft.trim()
+    if (!name || name === value) { setDraft(value); return }
+    onCommit(name)
   }
 
   return (
+    <input
+      type="text"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur()
+        if (e.key === 'Escape') setDraft(value)
+      }}
+      aria-label={ariaLabel}
+    />
+  )
+}
+
+function TeamManageRow({
+  team, projects, canArchive, onUpdate,
+}: {
+  team: Team
+  projects: Project[]
+  canArchive: boolean
+  onUpdate: (slug: string, patch: { name?: string; archived?: boolean; projectSlug?: string }) => Promise<void>
+}) {
+  const projectOptions = projects.filter((p) => !p.archived || p.slug === team.projectSlug)
+  return (
     <li className={`team-manage-row ${team.archived ? 'team-archived' : ''}`}>
-      <input
-        type="text"
-        value={nameDraft}
-        onChange={(e) => setNameDraft(e.target.value)}
-        onBlur={commitName}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') e.currentTarget.blur()
-          if (e.key === 'Escape') setNameDraft(team.name)
-        }}
-        aria-label={`Rename ${team.name}`}
-      />
+      <InlineRenameInput value={team.name} ariaLabel={`Rename ${team.name}`}
+        onCommit={(name) => void onUpdate(team.slug, { name })} />
       <span className="team-manage-slug">{team.slug}</span>
+      {projectOptions.length > 1 && (
+        <select
+          value={team.projectSlug ?? ''}
+          onChange={(e) => void onUpdate(team.slug, { projectSlug: e.target.value })}
+          aria-label={`Move ${team.name} to another project`}
+        >
+          {projectOptions.map((p) => (
+            <option key={p.slug} value={p.slug}>{p.name}{p.archived ? ' (archived)' : ''}</option>
+          ))}
+        </select>
+      )}
       {team.archived ? (
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => void onUpdate(team.slug, { archived: false })}>
           Restore
@@ -1540,32 +1567,63 @@ function TeamManageRow({
   )
 }
 
+function AddRow({
+  placeholder, buttonLabel, onAdd,
+}: {
+  placeholder: string
+  buttonLabel: string
+  onAdd: (name: string) => Promise<void>
+}) {
+  const [name, setName] = useState('')
+  const [isBusy, setIsBusy] = useState(false)
+
+  async function submit() {
+    const trimmed = name.trim()
+    if (!trimmed || isBusy) return
+    setIsBusy(true)
+    try {
+      await onAdd(trimmed)
+      setName('')
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  return (
+    <div className="goal-input-row team-add-row">
+      <input
+        type="text"
+        placeholder={placeholder}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void submit() } }}
+      />
+      <button type="button" className="btn btn-primary btn-sm" onClick={() => void submit()} disabled={!name.trim() || isBusy}>
+        {isBusy ? 'Adding…' : buttonLabel}
+      </button>
+    </div>
+  )
+}
+
 function AdminPanel({
-  teams, onCreateTeam, onUpdateTeam,
+  teams, projects, onCreateTeam, onUpdateTeam, onCreateProject, onUpdateProject,
 }: {
   teams: Team[]
-  onCreateTeam: (name: string) => Promise<void>
-  onUpdateTeam: (slug: string, patch: { name?: string; archived?: boolean }) => Promise<void>
+  projects: Project[]
+  onCreateTeam: (name: string, projectSlug: string) => Promise<void>
+  onUpdateTeam: (slug: string, patch: { name?: string; archived?: boolean; projectSlug?: string }) => Promise<void>
+  onCreateProject: (name: string) => Promise<void>
+  onUpdateProject: (slug: string, patch: { name?: string; archived?: boolean }) => Promise<void>
 }) {
   const [users, setUsers] = useState<RosterUser[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
-  const [newTeamName, setNewTeamName] = useState('')
-  const [isCreatingTeam, setIsCreatingTeam] = useState(false)
 
-  const activeCount = teams.filter((t) => !t.archived).length
-
-  async function handleCreateTeam() {
-    const name = newTeamName.trim()
-    if (!name || isCreatingTeam) return
-    setIsCreatingTeam(true)
-    try {
-      await onCreateTeam(name)
-      setNewTeamName('')
-    } finally {
-      setIsCreatingTeam(false)
-    }
-  }
+  const archivedProjectSlugs = new Set(projects.filter((p) => p.archived).map((p) => p.slug))
+  const visibleTeamCount = teams.filter(
+    (t) => !t.archived && !(t.projectSlug && archivedProjectSlugs.has(t.projectSlug)),
+  ).length
+  const orphanTeams = teams.filter((t) => !t.projectSlug || !projects.some((p) => p.slug === t.projectSlug))
 
   useEffect(() => {
     let isActive = true
@@ -1599,28 +1657,55 @@ function AdminPanel({
 
       <section className="panel">
         <div className="panel-head">
-          <h3 className="panel-title">Teams</h3>
-          <span className="panel-note">rename anytime · archive when a project set ends</span>
+          <h3 className="panel-title">Projects &amp; teams</h3>
+          <span className="panel-note">a project groups the boards for one set of class work</span>
         </div>
-        <ul className="team-manage-list">
-          {teams.map((team) => (
-            <TeamManageRow key={team.slug} team={team}
-              canArchive={activeCount > 1} onUpdate={onUpdateTeam} />
-          ))}
-        </ul>
-        <div className="goal-input-row team-add-row">
-          <input
-            type="text"
-            placeholder="New team name…"
-            value={newTeamName}
-            onChange={(e) => setNewTeamName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleCreateTeam() } }}
-          />
-          <button type="button" className="btn btn-primary btn-sm"
-            onClick={() => void handleCreateTeam()} disabled={!newTeamName.trim() || isCreatingTeam}>
-            {isCreatingTeam ? 'Adding…' : 'Add team'}
-          </button>
-        </div>
+        {projects.map((project) => {
+          const projectTeams = teams.filter((t) => t.projectSlug === project.slug)
+          return (
+            <div key={project.slug} className={`project-group ${project.archived ? 'team-archived' : ''}`}>
+              <div className="project-group-head">
+                <InlineRenameInput value={project.name} ariaLabel={`Rename project ${project.name}`}
+                  onCommit={(name) => void onUpdateProject(project.slug, { name })} />
+                <span className="team-manage-slug">{project.slug}</span>
+                {project.archived ? (
+                  <button type="button" className="btn btn-ghost btn-sm"
+                    onClick={() => void onUpdateProject(project.slug, { archived: false })}>
+                    Restore
+                  </button>
+                ) : (
+                  <button type="button" className="btn btn-ghost btn-sm"
+                    title="Hide this project's boards; all cards and history are kept"
+                    onClick={() => void onUpdateProject(project.slug, { archived: true })}>
+                    Archive
+                  </button>
+                )}
+              </div>
+              <ul className="team-manage-list">
+                {projectTeams.map((team) => (
+                  <TeamManageRow key={team.slug} team={team} projects={projects}
+                    canArchive={visibleTeamCount > 1} onUpdate={onUpdateTeam} />
+                ))}
+              </ul>
+              {!project.archived && (
+                <AddRow placeholder={`New team in ${project.name}…`} buttonLabel="Add team"
+                  onAdd={(name) => onCreateTeam(name, project.slug)} />
+              )}
+            </div>
+          )
+        })}
+        {orphanTeams.length > 0 && (
+          <div className="project-group">
+            <div className="project-group-head"><span className="pm-group-label">No project</span></div>
+            <ul className="team-manage-list">
+              {orphanTeams.map((team) => (
+                <TeamManageRow key={team.slug} team={team} projects={projects}
+                  canArchive={visibleTeamCount > 1} onUpdate={onUpdateTeam} />
+              ))}
+            </ul>
+          </div>
+        )}
+        <AddRow placeholder="New project name…" buttonLabel="Add project" onAdd={onCreateProject} />
       </section>
 
       {isLoading ? (
@@ -1673,6 +1758,7 @@ function App() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [roster, setRoster] = useState<RosterUser[]>([])
   const [teams, setTeams] = useState<Team[]>([])
+  const [projects, setProjects] = useState<Project[]>([])
   const [activeTab, setActiveTab] = useState<TabId>('')
   const [qnaItems, setQnaItems] = useState<QnaQuestion[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -1721,16 +1807,20 @@ function App() {
     async function load() {
       try {
         setIsLoading(true); setError('')
-        const [cards, questions, users, teamRows] = await Promise.all([
+        const [cards, questions, users, teamData] = await Promise.all([
           fetchCards(), fetchQuestions(), fetchRoster(), fetchTeams(),
         ])
         if (isActive) {
           setTasks(cards)
           setQnaItems(questions)
           setRoster(users)
-          setTeams(teamRows)
-          const firstActive = teamRows.find((t) => !t.archived) ?? teamRows[0]
-          if (firstActive) setActiveTab((cur) => (cur ? cur : firstActive.slug))
+          setTeams(teamData.teams)
+          setProjects(teamData.projects)
+          const archivedProjects = new Set(teamData.projects.filter((p) => p.archived).map((p) => p.slug))
+          const firstVisible = teamData.teams.find(
+            (t) => !t.archived && !(t.projectSlug && archivedProjects.has(t.projectSlug)),
+          ) ?? teamData.teams[0]
+          if (firstVisible) setActiveTab((cur) => (cur ? cur : firstVisible.slug))
         }
       } catch (err) {
         if (isActive) setError(err instanceof Error ? err.message : 'Could not load cards.')
@@ -1742,7 +1832,12 @@ function App() {
     return () => { isActive = false }
   }, [authUser])
 
-  const activeTeams = teams.filter((t) => !t.archived)
+  const activeProjects = projects.filter((p) => !p.archived)
+  const archivedProjectSlugs = new Set(projects.filter((p) => p.archived).map((p) => p.slug))
+  // A team is visible when neither it nor its project is archived.
+  const visibleTeams = teams.filter(
+    (t) => !t.archived && !(t.projectSlug && archivedProjectSlugs.has(t.projectSlug)),
+  )
   const teamNames: Record<TeamId, string> = Object.fromEntries(teams.map((t) => [t.slug, t.name]))
   const tasksFor = (slug: TeamId) => tasks.filter((t) => t.team === slug)
   const rawActiveTasks = tasksFor(activeTab)
@@ -1755,27 +1850,54 @@ function App() {
     setActiveTab(tab)
   }
 
-  async function handleCreateTeam(name: string) {
+  async function handleCreateTeam(name: string, projectSlug: string) {
     setError('')
     try {
-      const created = await createTeam(name)
+      const created = await createTeam(name, projectSlug)
       setTeams((cur) => [...cur, created])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create team.')
     }
   }
 
-  async function handleUpdateTeam(slug: string, patch: { name?: string; archived?: boolean }) {
+  async function handleUpdateTeam(slug: string, patch: { name?: string; archived?: boolean; projectSlug?: string }) {
     setError('')
     try {
       const updated = await updateTeam(slug, patch)
       setTeams((cur) => cur.map((t) => (t.slug === slug ? updated : t)))
       if (patch.archived && activeTab === slug) {
-        const nextTeam = teams.find((t) => !t.archived && t.slug !== slug)
+        const nextTeam = visibleTeams.find((t) => t.slug !== slug)
         setActiveTab(nextTeam ? nextTeam.slug : 'admin')
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not update team.')
+    }
+  }
+
+  async function handleCreateProject(name: string) {
+    setError('')
+    try {
+      const created = await createProject(name)
+      setProjects((cur) => [...cur, created])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create project.')
+    }
+  }
+
+  async function handleUpdateProject(slug: string, patch: { name?: string; archived?: boolean }) {
+    setError('')
+    try {
+      const updated = await updateProject(slug, patch)
+      setProjects((cur) => cur.map((p) => (p.slug === slug ? updated : p)))
+      if (patch.archived) {
+        const activeTeam = teams.find((t) => t.slug === activeTab)
+        if (activeTeam?.projectSlug === slug) {
+          const nextTeam = visibleTeams.find((t) => t.projectSlug !== slug)
+          setActiveTab(nextTeam ? nextTeam.slug : 'admin')
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update project.')
     }
   }
 
@@ -1875,7 +1997,7 @@ function App() {
 
   const canSeeDashboard = authUser.isAdmin || (authUser.role === 'pm' && Boolean(authUser.team))
   const canManageCheckins = canSeeDashboard
-  const firstTeamSlug = activeTeams[0]?.slug ?? ''
+  const firstTeamSlug = visibleTeams[0]?.slug ?? ''
   const resolvePickedTeam = (picked: TeamId): TeamId => {
     if (!authUser.isAdmin) return authUser.team ?? firstTeamSlug
     return teams.some((t) => t.slug === picked) ? picked : firstTeamSlug
@@ -1905,17 +2027,41 @@ function App() {
       <aside className="sidebar">
         <div className="sidebar-brand"><Wordmark /></div>
         <nav className="side-nav">
-          <p className="nav-eyebrow">Boards</p>
-          {activeTeams.map((team) => (
-            <TeamNavItem
-              key={team.slug}
-              label={team.name}
-              active={activeTab === team.slug}
-              count={tasksFor(team.slug).length}
-              onClick={() => selectTab(team.slug)}
-              onRename={authUser.isAdmin ? (n) => void handleUpdateTeam(team.slug, { name: n }) : undefined}
-            />
-          ))}
+          {activeProjects.map((project) => {
+            const projectTeams = visibleTeams.filter((t) => t.projectSlug === project.slug)
+            if (projectTeams.length === 0) return null
+            return (
+              <Fragment key={project.slug}>
+                <p className="nav-eyebrow">{project.name}</p>
+                {projectTeams.map((team) => (
+                  <TeamNavItem
+                    key={team.slug}
+                    label={team.name}
+                    active={activeTab === team.slug}
+                    count={tasksFor(team.slug).length}
+                    onClick={() => selectTab(team.slug)}
+                    onRename={authUser.isAdmin ? (n) => void handleUpdateTeam(team.slug, { name: n }) : undefined}
+                  />
+                ))}
+              </Fragment>
+            )
+          })}
+          {visibleTeams.some((t) => !t.projectSlug || !projects.some((p) => p.slug === t.projectSlug)) && (
+            <Fragment>
+              <p className="nav-eyebrow">Boards</p>
+              {visibleTeams.filter((t) => !t.projectSlug || !projects.some((p) => p.slug === t.projectSlug)).map((team) => (
+                <TeamNavItem
+                  key={team.slug}
+                  label={team.name}
+                  active={activeTab === team.slug}
+                  count={tasksFor(team.slug).length}
+                  onClick={() => selectTab(team.slug)}
+                  onRename={authUser.isAdmin ? (n) => void handleUpdateTeam(team.slug, { name: n }) : undefined}
+                />
+              ))}
+            </Fragment>
+          )}
+          <p className="nav-eyebrow">General</p>
           <NavItem icon="qna" label="Q&A" active={activeTab === 'qna'} onClick={() => selectTab('qna')} />
           {!canManageCheckins && (
             <NavItem icon="checkins" label="My Check-ins" active={activeTab === 'checkins'} onClick={() => selectTab('checkins')} />
@@ -1958,9 +2104,9 @@ function App() {
             <h1 className="view-title">{viewTitle}</h1>
           </div>
           <div className="view-actions">
-            {activeTab === 'dashboard' && authUser.isAdmin && activeTeams.length > 1 && (
+            {activeTab === 'dashboard' && authUser.isAdmin && visibleTeams.length > 1 && (
               <div className="segmented">
-                {activeTeams.map((t) => (
+                {visibleTeams.map((t) => (
                   <label key={t.slug} className={`segment ${dashboardTeamResolved === t.slug ? 'selected' : ''}`}>
                     <input type="radio" name="dashboard-team"
                       checked={dashboardTeamResolved === t.slug} onChange={() => setDashboardTeam(t.slug)} />
@@ -1969,9 +2115,9 @@ function App() {
                 ))}
               </div>
             )}
-            {activeTab === 'checkins' && authUser.isAdmin && activeTeams.length > 1 && (
+            {activeTab === 'checkins' && authUser.isAdmin && visibleTeams.length > 1 && (
               <div className="segmented">
-                {activeTeams.map((t) => (
+                {visibleTeams.map((t) => (
                   <label key={t.slug} className={`segment ${checkinTeamResolved === t.slug ? 'selected' : ''}`}>
                     <input type="radio" name="checkin-team"
                       checked={checkinTeamResolved === t.slug} onChange={() => setCheckinTeam(t.slug)} />
@@ -2026,7 +2172,14 @@ function App() {
               <MyCheckins />
             )
           ) : activeTab === 'admin' && authUser.isAdmin ? (
-            <AdminPanel teams={teams} onCreateTeam={handleCreateTeam} onUpdateTeam={handleUpdateTeam} />
+            <AdminPanel
+              teams={teams}
+              projects={projects}
+              onCreateTeam={handleCreateTeam}
+              onUpdateTeam={handleUpdateTeam}
+              onCreateProject={handleCreateProject}
+              onUpdateProject={handleUpdateProject}
+            />
           ) : activeTab === 'qna' ? (
             <div className="page qna-page">
               <QnaComposer onPost={handleCreateQuestion} defaultName={defaultName} />
@@ -2064,7 +2217,9 @@ function App() {
           key={String(selectedCard.id)}
           task={selectedCard}
           roster={roster}
-          teams={teams}
+          teams={visibleTeams.some((t) => t.slug === selectedCard.team)
+            ? visibleTeams
+            : [...visibleTeams, ...teams.filter((t) => t.slug === selectedCard.team)]}
           teamNames={teamNames}
           onUpdate={handleUpdateTask}
           onClose={() => setSelectedCardId(null)}
@@ -2075,7 +2230,7 @@ function App() {
           defaultTeam={activeTab}
           defaultAssigneeId={authUser.id}
           roster={roster}
-          teams={teams}
+          teams={visibleTeams}
           teamNames={teamNames}
           onCreate={handleCreateTask}
           onClose={() => setNewCardOpen(false)}

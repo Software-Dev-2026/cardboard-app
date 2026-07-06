@@ -1,4 +1,4 @@
-import type { CardComment, CardEvent, Checkin, CheckinGoal, GoalStatus, QnaAnswer, QnaQuestion, Role, RosterUser, Task, Team, TeamActivityEvent, TeamId } from '../types'
+import type { CardComment, CardEvent, Checkin, CheckinGoal, GoalStatus, Project, QnaAnswer, QnaQuestion, Role, RosterUser, Task, Team, TeamActivityEvent, TeamId } from '../types'
 
 type CardPayload = Omit<Task, 'id'> & { id: string }
 
@@ -182,33 +182,53 @@ export async function updateCard(id: Task['id'], card: Omit<Task, 'id' | 'assign
   return data.card
 }
 
-interface TeamsResponse {
+export interface TeamsAndProjects {
   teams: Team[]
+  projects: Project[]
 }
 
 interface TeamResponse {
   team: Team
 }
 
-export async function fetchTeams(): Promise<Team[]> {
-  const data = await apiRequest<TeamsResponse>('/api/teams')
-  return data.teams
+interface ProjectResponse {
+  project: Project
 }
 
-export async function createTeam(name: string): Promise<Team> {
+export async function fetchTeams(): Promise<TeamsAndProjects> {
+  return apiRequest<TeamsAndProjects>('/api/teams')
+}
+
+export async function createTeam(name: string, projectSlug?: string): Promise<Team> {
   const data = await apiRequest<TeamResponse>('/api/teams', {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, projectSlug }),
   })
   return data.team
 }
 
-export async function updateTeam(slug: string, patch: { name?: string; archived?: boolean }): Promise<Team> {
+export async function updateTeam(slug: string, patch: { name?: string; archived?: boolean; projectSlug?: string }): Promise<Team> {
   const data = await apiRequest<TeamResponse>(`/api/teams/${slug}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   })
   return data.team
+}
+
+export async function createProject(name: string): Promise<Project> {
+  const data = await apiRequest<ProjectResponse>('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+  return data.project
+}
+
+export async function updateProject(slug: string, patch: { name?: string; archived?: boolean }): Promise<Project> {
+  const data = await apiRequest<ProjectResponse>(`/api/projects/${slug}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+  return data.project
 }
 
 interface CheckinsResponse {
