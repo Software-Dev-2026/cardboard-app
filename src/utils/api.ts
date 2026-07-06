@@ -1,4 +1,4 @@
-import type { CardComment, CardEvent, Checkin, CheckinGoal, GoalStatus, QnaAnswer, QnaQuestion, Role, RosterUser, Task, TeamActivityEvent, TeamId } from '../types'
+import type { CardComment, CardEvent, Checkin, CheckinGoal, GoalStatus, QnaAnswer, QnaQuestion, Role, RosterUser, Task, Team, TeamActivityEvent, TeamId } from '../types'
 
 type CardPayload = Omit<Task, 'id'> & { id: string }
 
@@ -180,6 +180,35 @@ export async function updateCard(id: Task['id'], card: Omit<Task, 'id' | 'assign
     body: JSON.stringify(card),
   })
   return data.card
+}
+
+interface TeamsResponse {
+  teams: Team[]
+}
+
+interface TeamResponse {
+  team: Team
+}
+
+export async function fetchTeams(): Promise<Team[]> {
+  const data = await apiRequest<TeamsResponse>('/api/teams')
+  return data.teams
+}
+
+export async function createTeam(name: string): Promise<Team> {
+  const data = await apiRequest<TeamResponse>('/api/teams', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+  return data.team
+}
+
+export async function updateTeam(slug: string, patch: { name?: string; archived?: boolean }): Promise<Team> {
+  const data = await apiRequest<TeamResponse>(`/api/teams/${slug}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+  return data.team
 }
 
 interface CheckinsResponse {

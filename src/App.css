@@ -1620,6 +1620,60 @@
   max-width: 720px;
 }
 
+/* ── Team management ──────────────────────────────────────────────────────── */
+
+.team-manage-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.team-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+
+.team-manage-row input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  padding: 4px 7px;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.team-manage-row input:hover,
+.team-manage-row input:focus {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  outline: none;
+}
+
+.team-manage-slug {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted);
+}
+
+.team-archived input {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.team-add-row {
+  max-width: 420px;
+}
+
 /* ── Admin table ──────────────────────────────────────────────────────────── */
 
 .table-panel {

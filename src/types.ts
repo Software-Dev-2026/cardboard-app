@@ -1,5 +1,14 @@
-export type TeamId = 'team1' | 'team2'
-export type TabId = 'team1' | 'team2' | 'qna' | 'notes' | 'dashboard' | 'admin' | 'checkins'
+// Teams are dynamic rows now; a TeamId is a team's slug.
+export type TeamId = string
+// Board tabs are team slugs; the rest are the fixed views.
+export type TabId = string
+
+export interface Team {
+  slug: string
+  name: string
+  archived: boolean
+  orderIndex: number
+}
 export type Role = 'student' | 'pm'
 export type CardStatus = 'started' | 'flowing' | 'done'
 export type Priority = 'low' | 'medium' | 'high'

@@ -2,15 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import type { DragEvent, FormEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import './App.css'
 import {
-  createAnswer, createCard, createCardComment, createCheckin, createQuestion, fetchAdminUsers, fetchCardComments,
-  fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins, fetchPmNotes, fetchQuestions, fetchRoster,
-  fetchTeamActivity, fetchTeamCheckins, logout, savePmNotes, updateCard, updateCheckinGoalStatus,
-  updateCheckinNotes, updateDefaultName, updateUserRoleTeam,
+  createAnswer, createCard, createCardComment, createCheckin, createQuestion, createTeam, fetchAdminUsers,
+  fetchCardComments, fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins, fetchPmNotes, fetchQuestions,
+  fetchRoster, fetchTeamActivity, fetchTeamCheckins, fetchTeams, logout, savePmNotes, updateCard,
+  updateCheckinGoalStatus, updateCheckinNotes, updateDefaultName, updateTeam, updateUserRoleTeam,
 } from './utils/api'
 import type { AuthUser } from './utils/api'
 import type {
   CardComment, CardEvent, CardStatus, Checkin, GoalStatus, Priority, QnaQuestion, Role, RosterUser, TabId, Task,
-  TeamActivityEvent, TeamId,
+  Team, TeamActivityEvent, TeamId,
 } from './types'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ function NavItem({
 function TeamNavItem({
   label, active, count, onClick, onRename,
 }: {
-  label: string; active: boolean; count: number; onClick: () => void; onRename: (n: string) => void
+  label: string; active: boolean; count: number; onClick: () => void; onRename?: (n: string) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(label)
@@ -219,7 +219,7 @@ function TeamNavItem({
     setTimeout(() => inputRef.current?.select(), 0)
   }
   function commit() {
-    const t = value.trim(); if (t) onRename(t); setEditing(false)
+    const t = value.trim(); if (t && onRename) onRename(t); setEditing(false)
   }
   function handleKey(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Enter') commit()
@@ -239,7 +239,7 @@ function TeamNavItem({
     <button type="button" className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>
       <NavIcon kind="board" />
       <span className="nav-item-label">{label}</span>
-      {active && (
+      {active && onRename && (
         <span className="nav-rename-icon" onClick={startEdit} title="Rename board" role="button">✎</span>
       )}
       <span className="nav-item-badge">{count}</span>
@@ -267,7 +267,7 @@ function SidebarUser({
   const roleChip = user.isAdmin
     ? 'Admin'
     : user.role === 'pm'
-      ? `PM · ${user.team ? teamNames[user.team] : 'No team'}`
+      ? `PM · ${user.team ? (teamNames[user.team] ?? user.team) : 'No team'}`
       : 'Student'
 
   async function saveDefaultName() {
@@ -582,10 +582,11 @@ function BoardColumn({
 // description commit on blur so typing isn't a request per keystroke.
 
 function CardDetailModal({
-  task, roster, teamNames, onUpdate, onClose,
+  task, roster, teams, teamNames, onUpdate, onClose,
 }: {
   task: Task
   roster: RosterUser[]
+  teams: Team[]
   teamNames: Record<TeamId, string>
   onUpdate: (id: Task['id'], updated: Partial<Task>) => Promise<void>
   onClose: () => void
@@ -612,7 +613,7 @@ function CardDetailModal({
   return (
     <ModalShell onClose={onClose} wide>
       <header className="modal-head">
-        <span className="modal-eyebrow">{teamNames[task.team]} · {statusLabel(task.cardStatus)}</span>
+        <span className="modal-eyebrow">{teamNames[task.team] ?? task.team} · {statusLabel(task.cardStatus)}</span>
         <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
       </header>
       <div className="card-modal-grid">
@@ -672,8 +673,9 @@ function CardDetailModal({
           <div className="prop">
             <span className="prop-label">Team</span>
             <select value={task.team} onChange={(e) => commit({ team: e.target.value as TeamId })}>
-              <option value="team1">{teamNames.team1}</option>
-              <option value="team2">{teamNames.team2}</option>
+              {teams.filter((t) => !t.archived || t.slug === task.team).map((t) => (
+                <option key={t.slug} value={t.slug}>{t.name}{t.archived ? ' (archived)' : ''}</option>
+              ))}
             </select>
           </div>
           <div className="prop">
@@ -690,11 +692,12 @@ function CardDetailModal({
 // ── NewCardModal ──────────────────────────────────────────────────────────────
 
 function NewCardModal({
-  defaultTeam, defaultAssigneeId, roster, teamNames, onCreate, onClose,
+  defaultTeam, defaultAssigneeId, roster, teams, teamNames, onCreate, onClose,
 }: {
   defaultTeam: TeamId
   defaultAssigneeId: string | null
   roster: RosterUser[]
+  teams: Team[]
   teamNames: Record<TeamId, string>
   onCreate: (draft: TaskDraft) => Promise<boolean>
   onClose: () => void
@@ -726,7 +729,7 @@ function NewCardModal({
   return (
     <ModalShell onClose={onClose}>
       <header className="modal-head">
-        <span className="modal-eyebrow">New card · {teamNames[draft.team]}</span>
+        <span className="modal-eyebrow">New card · {teamNames[draft.team] ?? draft.team}</span>
         <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
       </header>
       <form className="new-card-form" onSubmit={(e) => void handleSubmit(e)}>
@@ -762,8 +765,9 @@ function NewCardModal({
           <div className="prop">
             <span className="prop-label">Team</span>
             <select value={draft.team} onChange={(e) => update('team', e.target.value as TeamId)}>
-              <option value="team1">{teamNames.team1}</option>
-              <option value="team2">{teamNames.team2}</option>
+              {teams.filter((t) => !t.archived).map((t) => (
+                <option key={t.slug} value={t.slug}>{t.name}</option>
+              ))}
             </select>
           </div>
           <div className="prop">
@@ -1492,10 +1496,76 @@ function MyCheckins() {
 
 // ── AdminPanel ────────────────────────────────────────────────────────────────
 
-function AdminPanel({ teamNames }: { teamNames: Record<TeamId, string> }) {
+function TeamManageRow({
+  team, canArchive, onUpdate,
+}: {
+  team: Team
+  canArchive: boolean
+  onUpdate: (slug: string, patch: { name?: string; archived?: boolean }) => Promise<void>
+}) {
+  const [nameDraft, setNameDraft] = useState(team.name)
+
+  function commitName() {
+    const name = nameDraft.trim()
+    if (!name || name === team.name) { setNameDraft(team.name); return }
+    void onUpdate(team.slug, { name })
+  }
+
+  return (
+    <li className={`team-manage-row ${team.archived ? 'team-archived' : ''}`}>
+      <input
+        type="text"
+        value={nameDraft}
+        onChange={(e) => setNameDraft(e.target.value)}
+        onBlur={commitName}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+          if (e.key === 'Escape') setNameDraft(team.name)
+        }}
+        aria-label={`Rename ${team.name}`}
+      />
+      <span className="team-manage-slug">{team.slug}</span>
+      {team.archived ? (
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void onUpdate(team.slug, { archived: false })}>
+          Restore
+        </button>
+      ) : (
+        <button type="button" className="btn btn-ghost btn-sm" disabled={!canArchive}
+          title={canArchive ? 'Hide this board; cards and history are kept' : 'At least one team must stay active'}
+          onClick={() => void onUpdate(team.slug, { archived: true })}>
+          Archive
+        </button>
+      )}
+    </li>
+  )
+}
+
+function AdminPanel({
+  teams, onCreateTeam, onUpdateTeam,
+}: {
+  teams: Team[]
+  onCreateTeam: (name: string) => Promise<void>
+  onUpdateTeam: (slug: string, patch: { name?: string; archived?: boolean }) => Promise<void>
+}) {
   const [users, setUsers] = useState<RosterUser[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
+  const [newTeamName, setNewTeamName] = useState('')
+  const [isCreatingTeam, setIsCreatingTeam] = useState(false)
+
+  const activeCount = teams.filter((t) => !t.archived).length
+
+  async function handleCreateTeam() {
+    const name = newTeamName.trim()
+    if (!name || isCreatingTeam) return
+    setIsCreatingTeam(true)
+    try {
+      await onCreateTeam(name)
+      setNewTeamName('')
+    } finally {
+      setIsCreatingTeam(false)
+    }
+  }
 
   useEffect(() => {
     let isActive = true
@@ -1526,6 +1596,33 @@ function AdminPanel({ teamNames }: { teamNames: Record<TeamId, string> }) {
   return (
     <div className="page">
       {error && <p className="form-error">{error}</p>}
+
+      <section className="panel">
+        <div className="panel-head">
+          <h3 className="panel-title">Teams</h3>
+          <span className="panel-note">rename anytime · archive when a project set ends</span>
+        </div>
+        <ul className="team-manage-list">
+          {teams.map((team) => (
+            <TeamManageRow key={team.slug} team={team}
+              canArchive={activeCount > 1} onUpdate={onUpdateTeam} />
+          ))}
+        </ul>
+        <div className="goal-input-row team-add-row">
+          <input
+            type="text"
+            placeholder="New team name…"
+            value={newTeamName}
+            onChange={(e) => setNewTeamName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleCreateTeam() } }}
+          />
+          <button type="button" className="btn btn-primary btn-sm"
+            onClick={() => void handleCreateTeam()} disabled={!newTeamName.trim() || isCreatingTeam}>
+            {isCreatingTeam ? 'Adding…' : 'Add team'}
+          </button>
+        </div>
+      </section>
+
       {isLoading ? (
         <p className="quiet-text">Loading users…</p>
       ) : (
@@ -1555,8 +1652,9 @@ function AdminPanel({ teamNames }: { teamNames: Record<TeamId, string> }) {
                     <select value={person.team ?? ''}
                       onChange={(e) => void handleRoleChange(person.id, person.role, e.target.value ? (e.target.value as TeamId) : null)}>
                       <option value="">No team</option>
-                      <option value="team1">{teamNames.team1}</option>
-                      <option value="team2">{teamNames.team2}</option>
+                      {teams.filter((t) => !t.archived || t.slug === person.team).map((t) => (
+                        <option key={t.slug} value={t.slug}>{t.name}{t.archived ? ' (archived)' : ''}</option>
+                      ))}
                     </select>
                   </td>
                 </tr>
@@ -1574,8 +1672,8 @@ function AdminPanel({ teamNames }: { teamNames: Record<TeamId, string> }) {
 function App() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [roster, setRoster] = useState<RosterUser[]>([])
-  const [teamNames, setTeamNames] = useState<Record<TeamId, string>>({ team1: 'Team 1', team2: 'Team 2' })
-  const [activeTab, setActiveTab] = useState<TabId>('team1')
+  const [teams, setTeams] = useState<Team[]>([])
+  const [activeTab, setActiveTab] = useState<TabId>('')
   const [qnaItems, setQnaItems] = useState<QnaQuestion[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
@@ -1584,8 +1682,8 @@ function App() {
   const [authChecked, setAuthChecked] = useState(false)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [myTasksOnly, setMyTasksOnly] = useState(false)
-  const [dashboardTeam, setDashboardTeam] = useState<TeamId>('team1')
-  const [checkinTeam, setCheckinTeam] = useState<TeamId>('team1')
+  const [dashboardTeam, setDashboardTeam] = useState<TeamId>('')
+  const [checkinTeam, setCheckinTeam] = useState<TeamId>('')
   const [selectedCardId, setSelectedCardId] = useState<Task['id'] | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
 
@@ -1623,11 +1721,16 @@ function App() {
     async function load() {
       try {
         setIsLoading(true); setError('')
-        const [cards, questions, users] = await Promise.all([fetchCards(), fetchQuestions(), fetchRoster()])
+        const [cards, questions, users, teamRows] = await Promise.all([
+          fetchCards(), fetchQuestions(), fetchRoster(), fetchTeams(),
+        ])
         if (isActive) {
           setTasks(cards)
           setQnaItems(questions)
           setRoster(users)
+          setTeams(teamRows)
+          const firstActive = teamRows.find((t) => !t.archived) ?? teamRows[0]
+          if (firstActive) setActiveTab((cur) => (cur ? cur : firstActive.slug))
         }
       } catch (err) {
         if (isActive) setError(err instanceof Error ? err.message : 'Could not load cards.')
@@ -1639,9 +1742,10 @@ function App() {
     return () => { isActive = false }
   }, [authUser])
 
-  const team1Tasks = tasks.filter((t) => t.team === 'team1')
-  const team2Tasks = tasks.filter((t) => t.team === 'team2')
-  const rawActiveTasks = activeTab === 'team1' ? team1Tasks : team2Tasks
+  const activeTeams = teams.filter((t) => !t.archived)
+  const teamNames: Record<TeamId, string> = Object.fromEntries(teams.map((t) => [t.slug, t.name]))
+  const tasksFor = (slug: TeamId) => tasks.filter((t) => t.team === slug)
+  const rawActiveTasks = tasksFor(activeTab)
   const activeTasks = myTasksOnly
     ? rawActiveTasks.filter((t) => t.assigneeUserId === authUser?.id)
     : rawActiveTasks
@@ -1649,6 +1753,30 @@ function App() {
 
   function selectTab(tab: TabId) {
     setActiveTab(tab)
+  }
+
+  async function handleCreateTeam(name: string) {
+    setError('')
+    try {
+      const created = await createTeam(name)
+      setTeams((cur) => [...cur, created])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create team.')
+    }
+  }
+
+  async function handleUpdateTeam(slug: string, patch: { name?: string; archived?: boolean }) {
+    setError('')
+    try {
+      const updated = await updateTeam(slug, patch)
+      setTeams((cur) => cur.map((t) => (t.slug === slug ? updated : t)))
+      if (patch.archived && activeTab === slug) {
+        const nextTeam = teams.find((t) => !t.archived && t.slug !== slug)
+        setActiveTab(nextTeam ? nextTeam.slug : 'admin')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update team.')
+    }
   }
 
   async function handleCreateTask(draft: TaskDraft): Promise<boolean> {
@@ -1747,18 +1875,23 @@ function App() {
 
   const canSeeDashboard = authUser.isAdmin || (authUser.role === 'pm' && Boolean(authUser.team))
   const canManageCheckins = canSeeDashboard
-  const dashboardTeamResolved: TeamId = authUser.isAdmin ? dashboardTeam : (authUser.team ?? 'team1')
-  const checkinTeamResolved: TeamId = authUser.isAdmin ? checkinTeam : (authUser.team ?? 'team1')
-  const isBoardView = activeTab === 'team1' || activeTab === 'team2'
+  const firstTeamSlug = activeTeams[0]?.slug ?? ''
+  const resolvePickedTeam = (picked: TeamId): TeamId => {
+    if (!authUser.isAdmin) return authUser.team ?? firstTeamSlug
+    return teams.some((t) => t.slug === picked) ? picked : firstTeamSlug
+  }
+  const dashboardTeamResolved: TeamId = resolvePickedTeam(dashboardTeam)
+  const checkinTeamResolved: TeamId = resolvePickedTeam(checkinTeam)
+  const isBoardView = teams.some((t) => t.slug === activeTab)
   const selectedCard = selectedCardId === null ? null : tasks.find((t) => t.id === selectedCardId) ?? null
 
   const viewTitle =
     activeTab === 'qna' ? 'Q&A'
-    : activeTab === 'dashboard' ? `${teamNames[dashboardTeamResolved]} Dashboard`
-    : activeTab === 'notes' ? `${authUser.team ? teamNames[authUser.team] : ''} Notes`
-    : activeTab === 'checkins' ? (canManageCheckins ? `${teamNames[checkinTeamResolved]} Check-ins` : 'My check-ins')
+    : activeTab === 'dashboard' ? `${teamNames[dashboardTeamResolved] ?? ''} Dashboard`
+    : activeTab === 'notes' ? `${authUser.team ? (teamNames[authUser.team] ?? authUser.team) : ''} Notes`
+    : activeTab === 'checkins' ? (canManageCheckins ? `${teamNames[checkinTeamResolved] ?? ''} Check-ins` : 'My check-ins')
     : activeTab === 'admin' ? 'Manage roles'
-    : `${teamNames[activeTab]} Board`
+    : `${teamNames[activeTab] ?? activeTab} Board`
 
   const viewEyebrow =
     activeTab === 'qna' ? 'Forum'
@@ -1773,12 +1906,16 @@ function App() {
         <div className="sidebar-brand"><Wordmark /></div>
         <nav className="side-nav">
           <p className="nav-eyebrow">Boards</p>
-          <TeamNavItem label={teamNames.team1} active={activeTab === 'team1'} count={team1Tasks.length}
-            onClick={() => selectTab('team1')}
-            onRename={(n) => setTeamNames((cur) => ({ ...cur, team1: n }))} />
-          <TeamNavItem label={teamNames.team2} active={activeTab === 'team2'} count={team2Tasks.length}
-            onClick={() => selectTab('team2')}
-            onRename={(n) => setTeamNames((cur) => ({ ...cur, team2: n }))} />
+          {activeTeams.map((team) => (
+            <TeamNavItem
+              key={team.slug}
+              label={team.name}
+              active={activeTab === team.slug}
+              count={tasksFor(team.slug).length}
+              onClick={() => selectTab(team.slug)}
+              onRename={authUser.isAdmin ? (n) => void handleUpdateTeam(team.slug, { name: n }) : undefined}
+            />
+          ))}
           <NavItem icon="qna" label="Q&A" active={activeTab === 'qna'} onClick={() => selectTab('qna')} />
           {!canManageCheckins && (
             <NavItem icon="checkins" label="My Check-ins" active={activeTab === 'checkins'} onClick={() => selectTab('checkins')} />
@@ -1821,24 +1958,24 @@ function App() {
             <h1 className="view-title">{viewTitle}</h1>
           </div>
           <div className="view-actions">
-            {activeTab === 'dashboard' && authUser.isAdmin && (
+            {activeTab === 'dashboard' && authUser.isAdmin && activeTeams.length > 1 && (
               <div className="segmented">
-                {(['team1', 'team2'] as TeamId[]).map((tid) => (
-                  <label key={tid} className={`segment ${dashboardTeam === tid ? 'selected' : ''}`}>
+                {activeTeams.map((t) => (
+                  <label key={t.slug} className={`segment ${dashboardTeamResolved === t.slug ? 'selected' : ''}`}>
                     <input type="radio" name="dashboard-team"
-                      checked={dashboardTeam === tid} onChange={() => setDashboardTeam(tid)} />
-                    {teamNames[tid]}
+                      checked={dashboardTeamResolved === t.slug} onChange={() => setDashboardTeam(t.slug)} />
+                    {t.name}
                   </label>
                 ))}
               </div>
             )}
-            {activeTab === 'checkins' && authUser.isAdmin && (
+            {activeTab === 'checkins' && authUser.isAdmin && activeTeams.length > 1 && (
               <div className="segmented">
-                {(['team1', 'team2'] as TeamId[]).map((tid) => (
-                  <label key={tid} className={`segment ${checkinTeam === tid ? 'selected' : ''}`}>
+                {activeTeams.map((t) => (
+                  <label key={t.slug} className={`segment ${checkinTeamResolved === t.slug ? 'selected' : ''}`}>
                     <input type="radio" name="checkin-team"
-                      checked={checkinTeam === tid} onChange={() => setCheckinTeam(tid)} />
-                    {teamNames[tid]}
+                      checked={checkinTeamResolved === t.slug} onChange={() => setCheckinTeam(t.slug)} />
+                    {t.name}
                   </label>
                 ))}
               </div>
@@ -1866,30 +2003,30 @@ function App() {
 
           {activeTab === 'notes' && authUser.role === 'pm' && authUser.team ? (
             <PmNotes
-              tasks={authUser.team === 'team1' ? team1Tasks : team2Tasks}
-              teamName={teamNames[authUser.team]}
+              tasks={tasksFor(authUser.team)}
+              teamName={teamNames[authUser.team] ?? authUser.team}
             />
           ) : activeTab === 'dashboard' && canSeeDashboard ? (
             <Dashboard
               key={dashboardTeamResolved}
               team={dashboardTeamResolved}
-              teamName={teamNames[dashboardTeamResolved]}
-              tasks={dashboardTeamResolved === 'team1' ? team1Tasks : team2Tasks}
+              teamName={teamNames[dashboardTeamResolved] ?? dashboardTeamResolved}
+              tasks={tasksFor(dashboardTeamResolved)}
             />
           ) : activeTab === 'checkins' ? (
             canManageCheckins ? (
               <TeamCheckins
                 key={checkinTeamResolved}
                 team={checkinTeamResolved}
-                teamName={teamNames[checkinTeamResolved]}
+                teamName={teamNames[checkinTeamResolved] ?? checkinTeamResolved}
                 roster={roster}
-                tasks={checkinTeamResolved === 'team1' ? team1Tasks : team2Tasks}
+                tasks={tasksFor(checkinTeamResolved)}
               />
             ) : (
               <MyCheckins />
             )
           ) : activeTab === 'admin' && authUser.isAdmin ? (
-            <AdminPanel teamNames={teamNames} />
+            <AdminPanel teams={teams} onCreateTeam={handleCreateTeam} onUpdateTeam={handleUpdateTeam} />
           ) : activeTab === 'qna' ? (
             <div className="page qna-page">
               <QnaComposer onPost={handleCreateQuestion} defaultName={defaultName} />
@@ -1927,6 +2064,7 @@ function App() {
           key={String(selectedCard.id)}
           task={selectedCard}
           roster={roster}
+          teams={teams}
           teamNames={teamNames}
           onUpdate={handleUpdateTask}
           onClose={() => setSelectedCardId(null)}
@@ -1937,6 +2075,7 @@ function App() {
           defaultTeam={activeTab}
           defaultAssigneeId={authUser.id}
           roster={roster}
+          teams={teams}
           teamNames={teamNames}
           onCreate={handleCreateTask}
           onClose={() => setNewCardOpen(false)}

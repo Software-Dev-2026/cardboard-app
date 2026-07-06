@@ -194,13 +194,15 @@ async function handleApi(req, res, url) {
     return
   }
 
-  const teamActivityMatch = url.pathname.match(/^\/api\/teams\/(team1|team2)\/activity$/)
+  const teamActivityMatch = url.pathname.match(/^\/api\/teams\/([a-z0-9][a-z0-9-]*)\/activity$/)
   if (teamActivityMatch && req.method === 'GET') {
     const team = teamActivityMatch[1]
     const user = await requireCurrentUser(req)
-    if (!user.isAdmin && !(user.role === 'pm' && user.team === team)) {
-      throw new HttpError(403, 'PM or admin access required for this team.')
+    if (!(await isKnownTeam(team))) {
+      sendJson(res, 404, { error: 'Team not found.' })
+      return
     }
+    requireTeamPmOrAdmin(user, team)
     const events = await listTeamActivity(team)
     sendJson(res, 200, { events })
     return
@@ -246,12 +248,44 @@ async function handleApi(req, res, url) {
     return
   }
 
-  const teamCheckinsMatch = url.pathname.match(/^\/api\/teams\/(team1|team2)\/checkins$/)
+  const teamCheckinsMatch = url.pathname.match(/^\/api\/teams\/([a-z0-9][a-z0-9-]*)\/checkins$/)
   if (teamCheckinsMatch && req.method === 'GET') {
     const user = await requireCurrentUser(req)
+    if (!(await isKnownTeam(teamCheckinsMatch[1]))) {
+      sendJson(res, 404, { error: 'Team not found.' })
+      return
+    }
     requireTeamPmOrAdmin(user, teamCheckinsMatch[1])
     const checkins = await listCheckins({ team: teamCheckinsMatch[1] })
     sendJson(res, 200, { checkins })
+    return
+  }
+
+  if (url.pathname === '/api/teams' && req.method === 'GET') {
+    await requireCurrentUser(req)
+    const teams = await getTeams()
+    sendJson(res, 200, { teams: teams.map(teamRowToPayload) })
+    return
+  }
+
+  if (url.pathname === '/api/teams' && req.method === 'POST') {
+    await requireAdmin(req)
+    const body = await readJson(req)
+    const team = await createTeam(body)
+    sendJson(res, 201, { team })
+    return
+  }
+
+  const teamPatchMatch = url.pathname.match(/^\/api\/teams\/([a-z0-9][a-z0-9-]*)$/)
+  if (teamPatchMatch && req.method === 'PATCH') {
+    await requireAdmin(req)
+    const body = await readJson(req)
+    const team = await updateTeam(teamPatchMatch[1], body)
+    if (!team) {
+      sendJson(res, 404, { error: 'Team not found.' })
+      return
+    }
+    sendJson(res, 200, { team })
     return
   }
 
@@ -598,6 +632,26 @@ async function ensureSchema() {
       on cardboard_cards (classroom_id, order_index, created_at)
   `
 
+  // Teams are dynamic rows now, not a hardcoded team1/team2 pair. The legacy
+  // check constraints have to go so new slugs can exist; values are validated
+  // in app code against cardboard_teams instead.
+  await sql`
+    create table if not exists cardboard_teams (
+      slug text primary key,
+      classroom_id uuid not null references cardboard_classrooms(id) on delete cascade,
+      name text not null,
+      archived boolean not null default false,
+      order_index integer not null default 0,
+      created_at timestamptz not null default now()
+    )
+  `
+
+  await sql`alter table cardboard_users drop constraint if exists cardboard_users_team_check`
+  await sql`alter table cardboard_cards drop constraint if exists cardboard_cards_team_check`
+  await sql`alter table cardboard_card_notes drop constraint if exists cardboard_card_notes_team_check`
+  await sql`alter table cardboard_scratch_notes drop constraint if exists cardboard_scratch_notes_team_check`
+  await sql`alter table cardboard_checkins drop constraint if exists cardboard_checkins_team_check`
+
   const schoolYearLabel = process.env.CARDBOARD_SCHOOL_YEAR_LABEL ?? '2026-2027'
   const classroomName = process.env.CARDBOARD_CLASSROOM_NAME ?? 'Cardboard Classroom'
   const joinCode = process.env.CARDBOARD_JOIN_CODE ?? 'CARDBOARD'
@@ -617,6 +671,13 @@ async function ensureSchema() {
           name = excluded.name,
           archived = false
     returning id, name, join_code;
+  `
+
+  // Seed the legacy pair so existing team1/team2 data keeps resolving.
+  await sql`
+    insert into cardboard_teams (slug, classroom_id, name, order_index)
+    values ('team1', ${classroom.id}, 'Team 1', 0), ('team2', ${classroom.id}, 'Team 2', 1)
+    on conflict (slug) do nothing
   `
 
   return classroom
@@ -647,6 +708,7 @@ async function createCard(body, user) {
   // a request without the key at all still defaults to the creator.
   const assigneeUserId = 'assigneeUserId' in body ? await resolveAssigneeUserId(body.assigneeUserId) : user.id
   const [assignee] = await sql`select display_name from cardboard_users where id = ${assigneeUserId} limit 1`
+  const team = await resolveTeamSlug(body.team)
 
   const [created] = await sql`
     insert into cardboard_cards (
@@ -661,7 +723,7 @@ async function createCard(body, user) {
       ${assigneeUserId},
       ${normalizeDate(body.dueDate)},
       ${normalizeTags(body.tags)},
-      ${normalizeTeam(body.team)},
+      ${team},
       ${normalizeStatus(body.cardStatus)},
       ${normalizePriority(body.priority)},
       ${(await listCards()).length}
@@ -830,7 +892,7 @@ async function updateCard(id, body, user) {
   const nextAssigneeName = assignee?.display_name ?? 'Unassigned'
   const nextDueDate = normalizeDate(body.dueDate)
   const nextTags = normalizeTags(body.tags)
-  const nextTeam = normalizeTeam(body.team)
+  const nextTeam = await resolveTeamSlug(body.team, before.team)
   const nextDescription = normalizeText(body.description)
 
   const events = []
@@ -990,7 +1052,7 @@ async function listRoster() {
 
 async function updateUserRoleTeam(userId, body) {
   const role = body.role === 'pm' ? 'pm' : 'student'
-  const team = body.team === 'team2' ? 'team2' : body.team === 'team1' ? 'team1' : null
+  const team = body.team ? await requireTeamSlug(body.team) : null
   if (role === 'pm' && !team) throw new HttpError(400, 'PM must be assigned a team.')
 
   const [updated] = await sql`
@@ -1382,7 +1444,7 @@ function cardRowToPayload(row) {
     assigneeUserId: row.assignee_user_id ?? null,
     dueDate: formatDate(row.due_date),
     tags: Array.isArray(row.tags) ? row.tags : [],
-    team: row.team === 'team2' ? 'team2' : 'team1',
+    team: row.team,
     cardStatus: row.status === 'flowing' || row.status === 'done' ? row.status : 'started',
     priority: normalizePriority(row.priority),
   }
@@ -1529,8 +1591,89 @@ function sanitizeNoteHtml(value) {
     .replace(/<(\/?)(?!strong\b|b\b|em\b|i\b|u\b|br\b|div\b|p\b)([a-z][^>]*)>/gi, '')
 }
 
-function normalizeTeam(value) {
-  return value === 'team2' ? 'team2' : 'team1'
+// ── Teams registry ───────────────────────────────────────────────────────────
+// Team slugs are validated in app code against cardboard_teams (the old
+// hardcoded check constraints are gone). Cached because teams change rarely.
+
+let teamsCache = null
+
+async function getTeams() {
+  if (!teamsCache) {
+    teamsCache = await sql`
+      select slug, name, archived, order_index from cardboard_teams
+      where classroom_id = ${activeClassroom.id}
+      order by order_index, created_at
+    `
+  }
+  return teamsCache
+}
+
+function teamRowToPayload(row) {
+  return { slug: row.slug, name: row.name, archived: row.archived, orderIndex: row.order_index }
+}
+
+async function isKnownTeam(slug) {
+  const teams = await getTeams()
+  return teams.some((t) => t.slug === slug)
+}
+
+// Loose resolve for card writes: unknown value falls back (existing team on
+// update, first active team on create) rather than erroring.
+async function resolveTeamSlug(value, fallback = null) {
+  const teams = await getTeams()
+  if (teams.some((t) => t.slug === value)) return value
+  if (fallback && teams.some((t) => t.slug === fallback)) return fallback
+  const firstActive = teams.find((t) => !t.archived) ?? teams[0]
+  if (!firstActive) throw new HttpError(400, 'No teams exist yet.')
+  return firstActive.slug
+}
+
+async function requireTeamSlug(value) {
+  if (await isKnownTeam(value)) return value
+  throw new HttpError(400, 'Unknown team.')
+}
+
+const RESERVED_TEAM_SLUGS = new Set(['qna', 'notes', 'dashboard', 'admin', 'checkins', 'mine', 'new', 'teams'])
+
+async function createTeam(body) {
+  const name = normalizeText(body.name)
+  if (!name) throw new HttpError(400, 'Team name is required.')
+  const teams = await getTeams()
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'team'
+  let slug = base
+  let n = 2
+  while (RESERVED_TEAM_SLUGS.has(slug) || teams.some((t) => t.slug === slug)) {
+    slug = `${base}-${n}`
+    n += 1
+  }
+  const maxOrder = teams.reduce((max, t) => Math.max(max, t.order_index), -1)
+  const [created] = await sql`
+    insert into cardboard_teams (slug, classroom_id, name, order_index)
+    values (${slug}, ${activeClassroom.id}, ${name}, ${maxOrder + 1})
+    returning *
+  `
+  teamsCache = null
+  return teamRowToPayload(created)
+}
+
+async function updateTeam(slug, body) {
+  const teams = await getTeams()
+  const existing = teams.find((t) => t.slug === slug)
+  if (!existing) return null
+  const name = 'name' in body ? normalizeText(body.name) : existing.name
+  if (!name) throw new HttpError(400, 'Team name is required.')
+  const archived = 'archived' in body ? Boolean(body.archived) : existing.archived
+  if (archived && !existing.archived) {
+    const activeCount = teams.filter((t) => !t.archived).length
+    if (activeCount <= 1) throw new HttpError(400, 'At least one team must stay active.')
+  }
+  const [updated] = await sql`
+    update cardboard_teams set name = ${name}, archived = ${archived}
+    where slug = ${slug} and classroom_id = ${activeClassroom.id}
+    returning *
+  `
+  teamsCache = null
+  return teamRowToPayload(updated)
 }
 
 function normalizeStatus(value) {
