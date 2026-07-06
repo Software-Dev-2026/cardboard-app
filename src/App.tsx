@@ -1540,7 +1540,6 @@ function TeamManageRow({
     <li className={`team-manage-row ${team.archived ? 'team-archived' : ''}`}>
       <InlineRenameInput value={team.name} ariaLabel={`Rename ${team.name}`}
         onCommit={(name) => void onUpdate(team.slug, { name })} />
-      <span className="team-manage-slug">{team.slug}</span>
       {projectOptions.length > 1 && (
         <select
           value={team.projectSlug ?? ''}
@@ -1667,7 +1666,6 @@ function AdminPanel({
               <div className="project-group-head">
                 <InlineRenameInput value={project.name} ariaLabel={`Rename project ${project.name}`}
                   onCommit={(name) => void onUpdateProject(project.slug, { name })} />
-                <span className="team-manage-slug">{project.slug}</span>
                 {project.archived ? (
                   <button type="button" className="btn btn-ghost btn-sm"
                     onClick={() => void onUpdateProject(project.slug, { archived: false })}>
