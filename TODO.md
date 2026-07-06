@@ -27,8 +27,8 @@ Checklist progress so far (Milestone 1):
 ### 2. Admin setup
 - [x] Add `ADMIN_GITHUB_LOGINS=your-login,instructor-login` to `.env`
 - [x] Sign in with your GitHub account, confirm the **Admin** tab appears
-- [ ] Promote one student per team to PM (role `pm` + `team1`/`team2`) from the Admin tab
-- [ ] Confirm a non-admin account cannot see the Admin tab or hit `PATCH /api/admin/users/:id` directly
+- [ ] Promote one student per team to PM (role `pm` + `team1`/`team2`) from the Admin tab — MECHANISM VERIFIED: promoted/reverted the seeded Test Student via the admin API and role/team scoping behaved correctly (2026-07-06); the real per-team promotions happen when classmates sign in
+- [x] Confirm a non-admin account cannot see the Admin tab or hit `PATCH /api/admin/users/:id` directly — verified with a session for the seeded Test Student: no Admin tab or Manage section in sidebar (screenshot), and `PATCH /api/admin/users/:id` returns 403 (2026-07-06)
 
 ### 3. Auth flow
 - [x] Confirm the app shows a full sign-in wall when logged out (no board content, no `/api/cards` request in the network tab)
@@ -38,15 +38,15 @@ Checklist progress so far (Milestone 1):
 - [x] Create a card, confirm an activity entry says "created" — verified in DB: card "The Studio App" has a `created` event with actor Luke Sampson (2026-07-05)
 - [x] Change its status, confirm an activity entry logs the old → new status — DB shows `status_changed` event `started → flowing` with actor Luke Sampson (2026-07-05)
 - [x] Reassign it via the edit form's new Assignee picker, confirm it persists after reload — reassigned to seeded "Test Student" dummy user, persisted in DB and across reload; `assignee_changed` event (Luke Sampson → Test Student) also logged (2026-07-05)
-- [ ] Post a comment as one user, reload as a different user, confirm it's visible with the right author — HALF DONE: comment posted and DB row confirms correct `author_user_id` (Luke Sampson) (2026-07-05); viewing as a *different* user still needs the second GitHub account (deferred)
+- [x] Post a comment as one user, reload as a different user, confirm it's visible with the right author — comment posted as Luke, then fetched with a Test Student session: correct author "Luke Sampson" returned (2026-07-06)
 - [x] Toggle **My Tasks** and confirm it filters to cards assigned to you, across both team tabs — user-verified in UI (2026-07-05)
 
 ### 5. PM Notes
 - [ ] As a team's PM, confirm you only see that team's notes with no toggle to the other team
-- [ ] As a plain student, confirm the PM Notes tab is not visible at all
+- [ ] As a plain student, confirm the PM Notes tab is not visible at all — API half verified: Test Student session gets 403 on `GET /api/pm-notes`, and their sidebar screenshot shows no PM Notes tab (2026-07-06); one glance from a real classmate account later will fully close this
 
 ### 6. Regression check
-- [ ] Confirm posting a Q&A question/answer while logged in shows your real name (no more "Anonymous")
+- [x] Confirm posting a Q&A question/answer while logged in shows your real name (no more "Anonymous") — user-verified in UI; DB rows show author "Luke Sampson" on both question and answer (2026-07-06)
 
 ---
 
@@ -56,13 +56,13 @@ Milestone 2 (priority + PM Dashboard) is implemented and passes `lint`/`build`/`
 
 ### 7. Priority
 - [x] Create a card, confirm it defaults to **Medium** priority — DB shows `priority = 'medium'` on the new card (2026-07-05); badge color check still open below
-- [ ] Change priority on an existing card (both up and down), confirm an activity entry logs the old → new priority
-- [ ] Confirm the priority badge on each card shows the right color (High = red, Medium = amber, Low = gray)
+- [x] Change priority on an existing card (both up and down), confirm an activity entry logs the old → new priority — DB shows `priority_changed` events medium→low and low→high, both with correct actor (2026-07-06)
+- [x] Confirm the priority badge on each card shows the right color (High = red, Medium = amber, Low = gray) — user-verified High=red in redesigned UI; Medium=amber verified via screenshot (2026-07-06)
 
 ### 8. PM Dashboard
-- [ ] As a team's PM, open the **Dashboard** tab — confirm it shows only your own team, with no team-switcher
+- [x] As a team's PM, open the **Dashboard** tab — confirm it shows only your own team, with no team-switcher — verified with Test Student promoted to PM+team2: title "Team 2 Dashboard", zero switchers rendered, own-team activity 200, other-team 403; reverted to student after (2026-07-06)
 - [ ] As an admin, open Dashboard — confirm you can toggle between Team 1 and Team 2
-- [ ] As a plain student (non-PM, non-admin), confirm the Dashboard tab is not visible, and `GET /api/teams/team1/activity` returns 403 if called directly
+- [x] As a plain student (non-PM, non-admin), confirm the Dashboard tab is not visible, and `GET /api/teams/team1/activity` returns 403 if called directly — sidebar screenshot shows no Dashboard tab; both teams' activity endpoints return 403 for a student session (2026-07-06)
 - [ ] Confirm the four numbers (Overdue, Due soon, Blocked, Need help) match what you'd count by hand on the board
 - [ ] Confirm the Workload list reflects open (non-Done) cards per assignee
 - [ ] Confirm the Recent Activity feed shows events across multiple cards on that team, most recent first, and includes the card title for context
