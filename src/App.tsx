@@ -3,7 +3,7 @@ import type { DragEvent, FormEvent, KeyboardEvent, MouseEvent, ReactNode } from 
 import './App.css'
 import {
   createAnswer, createCard, createCardComment, createCheckin, createProject, createQuestion, createTeam,
-  fetchAdminUsers, fetchCardComments, fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins, fetchPmNotes,
+  deleteCard, fetchAdminUsers, fetchCardComments, fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins, fetchPmNotes,
   fetchQuestions, fetchRoster, fetchTeamActivity, fetchTeamCheckins, fetchTeams, logout, savePmNotes,
   updateCard, updateCheckinGoalStatus, updateCheckinNotes, updateDefaultName, updateProject, updateTeam,
   updateUserMemberships,
@@ -584,18 +584,30 @@ function BoardColumn({
 // description commit on blur so typing isn't a request per keystroke.
 
 function CardDetailModal({
-  task, roster, teams, teamNames, onUpdate, onClose,
+  task, roster, teams, teamNames, onUpdate, onDelete, onClose,
 }: {
   task: Task
   roster: RosterUser[]
   teams: Team[]
   teamNames: Record<TeamId, string>
   onUpdate: (id: Task['id'], updated: Partial<Task>) => Promise<void>
+  onDelete: (id: Task['id']) => Promise<boolean>
   onClose: () => void
 }) {
   const [title, setTitle] = useState(task.title)
   const [description, setDescription] = useState(task.description)
   const [refreshToken, setRefreshToken] = useState(0)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+
+  async function handleDelete() {
+    if (!confirmingDelete) { setConfirmingDelete(true); return }
+    setIsDeleting(true)
+    const ok = await onDelete(task.id)
+    setIsDeleting(false)
+    if (ok) onClose()
+    else setConfirmingDelete(false)
+  }
 
   function commit(updated: Partial<Task>) {
     void onUpdate(task.id, updated).then(() => setRefreshToken((t) => t + 1))
@@ -684,6 +696,17 @@ function CardDetailModal({
             <span className="prop-label">Labels</span>
             <TagToggleRow selected={visibleTags(task.tags)}
               onChange={(tags) => commit({ tags: buildTags(tags) })} />
+          </div>
+          <div className="prop prop-danger">
+            <button
+              type="button"
+              className={`btn btn-sm ${confirmingDelete ? 'btn-danger' : 'btn-ghost'}`}
+              onClick={() => void handleDelete()}
+              onBlur={() => setConfirmingDelete(false)}
+              disabled={isDeleting}
+            >
+              {isDeleting ? 'Deleting…' : confirmingDelete ? 'Really delete? This is permanent' : 'Delete card'}
+            </button>
           </div>
         </aside>
       </div>
@@ -2000,6 +2023,18 @@ function App() {
     }
   }
 
+  async function handleDeleteTask(id: Task['id']): Promise<boolean> {
+    setError('')
+    try {
+      await deleteCard(id)
+      setTasks((cur) => cur.filter((t) => t.id !== id))
+      return true
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete card.')
+      return false
+    }
+  }
+
   function handleDropCard(id: string, status: CardStatus) {
     const current = tasks.find((t) => String(t.id) === id)
     if (!current || current.cardStatus === status) return
@@ -2289,6 +2324,7 @@ function App() {
             : [...visibleTeams, ...teams.filter((t) => t.slug === selectedCard.team)]}
           teamNames={teamNames}
           onUpdate={handleUpdateTask}
+          onDelete={handleDeleteTask}
           onClose={() => setSelectedCardId(null)}
         />
       )}

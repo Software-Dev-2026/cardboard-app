@@ -302,6 +302,32 @@
   font-size: 0.78rem;
 }
 
+.btn-danger {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 85%, black);
+}
+
+.prop-danger {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.prop-danger .btn-ghost {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 35%, transparent);
+}
+
+.prop-danger .btn-ghost:hover:not(:disabled) {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
 .icon-btn {
   display: inline-flex;
   align-items: center;

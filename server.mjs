@@ -237,6 +237,17 @@ async function handleApi(req, res, url) {
     return
   }
 
+  if (cardMatch && req.method === 'DELETE') {
+    const user = await requireCurrentUser(req)
+    const deleted = await deleteCard(cardMatch[1], user)
+    if (!deleted) {
+      sendJson(res, 404, { error: 'Card not found.' })
+      return
+    }
+    sendJson(res, 200, { ok: true })
+    return
+  }
+
   // Check-ins: a PM's dated 1:1 notes + goals about each student on their
   // team. Writable by that team's PM or an admin; a student can additionally
   // read (never edit) the entries that are about them.
@@ -948,6 +959,24 @@ function sectionBlock(text) {
 
 function escapeSlack(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// Deleting is destructive (events, comments, and notes cascade with it), so
+// it's restricted to the card's creator, a PM of the card's team, or an admin.
+async function deleteCard(cardId, user) {
+  const [card] = await sql`
+    select id, team, created_by_user_id from cardboard_cards
+    where id = ${cardId} and classroom_id = ${activeClassroom.id}
+    limit 1
+  `
+  if (!card) return null
+  const isCreator = String(card.created_by_user_id ?? '') === String(user.id)
+  const isTeamPm = pmTeamsOf(user).includes(card.team)
+  if (!user.isAdmin && !isCreator && !isTeamPm) {
+    throw new HttpError(403, 'Only the card creator, the team PM, or an admin can delete a card.')
+  }
+  await sql`delete from cardboard_cards where id = ${cardId}`
+  return card
 }
 
 async function updateCard(id, body, user) {

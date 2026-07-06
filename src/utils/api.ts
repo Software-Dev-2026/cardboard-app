@@ -174,6 +174,10 @@ export async function createCard(card: Omit<Task, 'id' | 'assignee'>): Promise<C
   return data.card
 }
 
+export async function deleteCard(id: Task['id']): Promise<void> {
+  await apiRequest<OkResponse>(`/api/cards/${id}`, { method: 'DELETE' })
+}
+
 export async function updateCard(id: Task['id'], card: Omit<Task, 'id' | 'assignee'>): Promise<CardPayload> {
   const data = await apiRequest<CardResponse>(`/api/cards/${id}`, {
     method: 'PATCH',
