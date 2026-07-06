@@ -874,7 +874,11 @@ function PmNotes({
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [scratchNotes, setScratchNotes] = useState('')
   const [savedNotesLoaded, setSavedNotesLoaded] = useState(false)
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const [selectedId, setSelectedId] = useState<string>('scratchpad')
   const scratchRef = useRef<HTMLDivElement>(null)
+
+  const selectedTask = tasks.find((t) => String(t.id) === selectedId) ?? null
 
   function setNote(taskId: string, text: string) {
     setNotes((cur) => ({ ...cur, [taskId]: text }))
@@ -897,10 +901,24 @@ function PmNotes({
     return () => { isActive = false }
   }, [])
 
+  // The scratchpad div is uncontrolled while typing (React never rewrites its
+  // HTML, so the caret stays put). Seed its content only when the view opens
+  // or the saved notes arrive.
+  useEffect(() => {
+    if (selectedId !== 'scratchpad' || !scratchRef.current) return
+    if (scratchRef.current.innerHTML !== scratchNotes) {
+      scratchRef.current.innerHTML = scratchNotes
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, savedNotesLoaded])
+
   useEffect(() => {
     if (!savedNotesLoaded) return
     const timeout = window.setTimeout(() => {
-      void savePmNotes({ notes, scratchNotes })
+      setSaveState('saving')
+      savePmNotes({ notes, scratchNotes })
+        .then(() => setSaveState('saved'))
+        .catch(() => setSaveState('idle'))
     }, 650)
     return () => window.clearTimeout(timeout)
   }, [notes, scratchNotes, savedNotesLoaded])
@@ -911,53 +929,108 @@ function PmNotes({
     setScratchNotes(scratchRef.current?.innerHTML ?? '')
   }
 
+  const grouped = CARD_STATUSES.map((s) => ({
+    ...s,
+    items: tasks.filter((t) => t.cardStatus === s.id),
+  }))
+
   return (
-    <div className="page">
-      {tasks.length === 0 ? (
-        <p className="quiet-text">No cards in {teamName} yet.</p>
-      ) : (
-        <div className="notes-grid">
-          {tasks.map((task) => {
-            const dueState = getDueState(task.dueDate)
-            const shownTags = visibleTags(task.tags)
-            return (
-              <div key={task.id} className="panel note-card">
-                <div className="note-card-chips">
-                  <span className={`due-chip due-${dueState.tone}`}>{dueState.label}</span>
-                  <span className={`status-chip status-${task.cardStatus}`}>{statusLabel(task.cardStatus)}</span>
-                  {shownTags.map((tag) => (
-                    <span key={tag} className={`tag-chip tag-${tag.toLowerCase().replace(' ', '-')} active static`}>{tag}</span>
-                  ))}
-                </div>
-                <h4 className="note-card-title">{task.title}</h4>
-                <p className="note-card-sub">{task.assignee} · {formatShortDate(task.dueDate)}</p>
-                <textarea className="note-textarea" placeholder="Observations, blockers, action items…"
-                  value={notes[String(task.id)] ?? ''} rows={4}
-                  onChange={(e) => setNote(String(task.id), e.target.value)} />
-              </div>
-            )
-          })}
-        </div>
-      )}
-      <section className="panel">
+    <div className="pm-notes-layout">
+      <aside className="pm-list panel">
+        <button
+          type="button"
+          className={`pm-row pm-row-scratch ${selectedId === 'scratchpad' ? 'active' : ''}`}
+          onClick={() => setSelectedId('scratchpad')}
+        >
+          <span className="pm-row-title">Scratchpad</span>
+          <span className="pm-row-sub">{teamName} · general notes</span>
+        </button>
+        {tasks.length === 0 ? (
+          <p className="quiet-text">No cards in {teamName} yet.</p>
+        ) : (
+          grouped.map((group) => group.items.length > 0 && (
+            <div key={group.id} className="pm-group">
+              <p className="pm-group-label">
+                <span className={`col-dot col-dot-${group.id}`} />
+                {group.label}
+                <span className="col-count">{String(group.items.length).padStart(2, '0')}</span>
+              </p>
+              {group.items.map((task) => {
+                const hasNote = Boolean(notes[String(task.id)]?.trim())
+                return (
+                  <button
+                    key={task.id}
+                    type="button"
+                    className={`pm-row ${selectedId === String(task.id) ? 'active' : ''}`}
+                    onClick={() => setSelectedId(String(task.id))}
+                  >
+                    <span className="pm-row-title">
+                      {task.title}
+                      {hasNote && <span className="pm-note-dot" title="Has a note" />}
+                    </span>
+                    <span className="pm-row-sub">{task.assignee}</span>
+                  </button>
+                )
+              })}
+            </div>
+          ))
+        )}
+      </aside>
+
+      <section className="pm-editor panel">
         <div className="panel-head">
-          <h3 className="panel-title">Scratchpad</h3>
-          <div className="format-toolbar" aria-label="Formatting controls">
-            <button type="button" title="Bold" onClick={() => formatScratch('bold')}><strong>B</strong></button>
-            <button type="button" title="Italic" onClick={() => formatScratch('italic')}><em>I</em></button>
-            <button type="button" title="Underline" onClick={() => formatScratch('underline')}><u>U</u></button>
+          {selectedTask ? (
+            <div className="pm-editor-heading">
+              <h3 className="panel-title">{selectedTask.title}</h3>
+              <div className="note-card-chips">
+                <span className={`status-chip status-${selectedTask.cardStatus}`}>{statusLabel(selectedTask.cardStatus)}</span>
+                <span className={`priority-badge priority-${selectedTask.priority}`}>{priorityLabel(selectedTask.priority)}</span>
+                <span className={`due-chip due-${getDueState(selectedTask.dueDate).tone}`}>{getDueState(selectedTask.dueDate).label}</span>
+                {visibleTags(selectedTask.tags).map((tag) => (
+                  <span key={tag} className={`tag-chip tag-${tag.toLowerCase().replace(' ', '-')} active static`}>{tag}</span>
+                ))}
+              </div>
+              <p className="note-card-sub">{selectedTask.assignee} · due {formatShortDate(selectedTask.dueDate)}</p>
+            </div>
+          ) : (
+            <div className="pm-editor-heading">
+              <h3 className="panel-title">Scratchpad</h3>
+              <p className="note-card-sub">{teamName} · meeting notes, follow-ups, reminders</p>
+            </div>
+          )}
+          <div className="pm-editor-tools">
+            {!selectedTask && (
+              <div className="format-toolbar" aria-label="Formatting controls">
+                <button type="button" title="Bold" onClick={() => formatScratch('bold')}><strong>B</strong></button>
+                <button type="button" title="Italic" onClick={() => formatScratch('italic')}><em>I</em></button>
+                <button type="button" title="Underline" onClick={() => formatScratch('underline')}><u>U</u></button>
+              </div>
+            )}
+            <span className={`save-state save-state-${saveState}`}>
+              {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : ''}
+            </span>
           </div>
         </div>
-        <div
-          ref={scratchRef}
-          className="scratch-editor"
-          contentEditable
-          role="textbox"
-          aria-label={`${teamName} PM scratchpad`}
-          data-placeholder="Meeting notes, follow-ups, reminders…"
-          dangerouslySetInnerHTML={{ __html: scratchNotes }}
-          onInput={(e) => setScratchNotes(e.currentTarget.innerHTML)}
-        />
+
+        {selectedTask ? (
+          <textarea
+            key={String(selectedTask.id)}
+            className="note-textarea pm-note-editor"
+            placeholder="Observations, blockers, action items…"
+            value={notes[String(selectedTask.id)] ?? ''}
+            onChange={(e) => setNote(String(selectedTask.id), e.target.value)}
+          />
+        ) : (
+          <div
+            ref={scratchRef}
+            className="scratch-editor"
+            contentEditable
+            role="textbox"
+            aria-label={`${teamName} PM scratchpad`}
+            data-placeholder="Meeting notes, follow-ups, reminders…"
+            onInput={(e) => setScratchNotes(e.currentTarget.innerHTML)}
+          />
+        )}
       </section>
     </div>
   )
