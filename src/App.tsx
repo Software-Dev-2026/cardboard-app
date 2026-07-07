@@ -85,6 +85,24 @@ function formatEventText(event: CardEvent): string {
   }
 }
 
+// The team feed names the card inside the sentence ("moved “X” from…") since
+// "this" only reads right inside a single card's modal.
+function formatTeamEventText(event: TeamActivityEvent): string {
+  const card = `“${event.cardTitle}”`
+  switch (event.eventType) {
+    case 'created':
+      return `${event.actorName} created ${card}`
+    case 'status_changed':
+      return `${event.actorName} moved ${card} from ${statusLabel(event.oldValue)} to ${statusLabel(event.newValue)}`
+    case 'assignee_changed':
+      return `${event.actorName} reassigned ${card} to ${event.newValue || 'Unassigned'}`
+    case 'priority_changed':
+      return `${event.actorName} changed ${card} priority from ${priorityLabel(event.oldValue)} to ${priorityLabel(event.newValue)}`
+    default:
+      return `${event.actorName} updated ${event.field ?? 'a field'} on ${card}`
+  }
+}
+
 function formatRelativeTime(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime()
   const minutes = Math.round(diffMs / 60000)
@@ -205,7 +223,8 @@ function NavItem({
   )
 }
 
-// A team board link that supports renaming its label in place (client-side only).
+// A team board link that supports renaming its label in place (admins only;
+// the rename persists through the team API).
 function TeamNavItem({
   label, active, count, onClick, onRename,
 }: {
@@ -338,14 +357,14 @@ function SidebarUser({
 
 // ── Form bits ─────────────────────────────────────────────────────────────────
 
-function TagToggleRow({ selected, onChange }: { selected: string[]; onChange: (t: string[]) => void }) {
+function TagToggleRow({ selected, onChange, disabled = false }: { selected: string[]; onChange: (t: string[]) => void; disabled?: boolean }) {
   function toggle(tag: string) {
     onChange(selected.includes(tag) ? selected.filter((t) => t !== tag) : [...selected, tag])
   }
   return (
     <div className="tag-toggle-row">
       {PRESET_TAGS.map((tag) => (
-        <button key={tag} type="button"
+        <button key={tag} type="button" disabled={disabled}
           className={`tag-chip tag-${tag.toLowerCase().replace(' ', '-')} ${selected.includes(tag) ? 'active' : ''}`}
           onClick={() => toggle(tag)}>
           {tag}
@@ -355,12 +374,12 @@ function TagToggleRow({ selected, onChange }: { selected: string[]; onChange: (t
   )
 }
 
-function PriorityPicker({ value, onChange, name }: { value: Priority; onChange: (p: Priority) => void; name: string }) {
+function PriorityPicker({ value, onChange, name, disabled = false }: { value: Priority; onChange: (p: Priority) => void; name: string; disabled?: boolean }) {
   return (
     <div className="segmented">
       {PRIORITIES.map((p) => (
         <label key={p.id} className={`segment priority-segment-${p.id} ${value === p.id ? 'selected' : ''}`}>
-          <input type="radio" name={name} checked={value === p.id} onChange={() => onChange(p.id)} />
+          <input type="radio" name={name} checked={value === p.id} disabled={disabled} onChange={() => onChange(p.id)} />
           {p.label}
         </label>
       ))}
@@ -496,9 +515,9 @@ function CardComments({ cardId }: { cardId: Task['id'] }) {
 // ── TaskCard ──────────────────────────────────────────────────────────────────
 
 function TaskCard({
-  task, index, onOpen,
+  task, index, canEdit, onOpen,
 }: {
-  task: Task; index: number; onOpen: (id: Task['id']) => void
+  task: Task; index: number; canEdit: boolean; onOpen: (id: Task['id']) => void
 }) {
   const dueState = getDueState(task.dueDate)
   const shownTags = visibleTags(task.tags)
@@ -512,8 +531,8 @@ function TaskCard({
     <article
       className="card"
       style={{ animationDelay: `${Math.min(index, 8) * 30}ms` }}
-      draggable
-      onDragStart={handleDragStart}
+      draggable={canEdit}
+      onDragStart={canEdit ? handleDragStart : undefined}
       onClick={() => onOpen(task.id)}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(task.id) } }}
       role="button"
@@ -539,9 +558,10 @@ function TaskCard({
 // ── BoardColumn ───────────────────────────────────────────────────────────────
 
 function BoardColumn({
-  sectionId, label, tasks, onOpen, onDropCard,
+  sectionId, label, tasks, canEditCard, onOpen, onDropCard,
 }: {
   sectionId: CardStatus; label: string; tasks: Task[]
+  canEditCard: (task: Task) => boolean
   onOpen: (id: Task['id']) => void
   onDropCard: (id: string, status: CardStatus) => void
 }) {
@@ -571,7 +591,7 @@ function BoardColumn({
           <p className="col-empty">No cards — drag one here</p>
         ) : (
           tasks.map((task, i) => (
-            <TaskCard key={task.id} task={task} index={i} onOpen={onOpen} />
+            <TaskCard key={task.id} task={task} index={i} canEdit={canEditCard(task)} onOpen={onOpen} />
           ))
         )}
       </div>
@@ -584,12 +604,14 @@ function BoardColumn({
 // description commit on blur so typing isn't a request per keystroke.
 
 function CardDetailModal({
-  task, roster, teams, teamNames, onUpdate, onDelete, onClose,
+  task, roster, teams, teamNames, canEdit, canDelete, onUpdate, onDelete, onClose,
 }: {
   task: Task
   roster: RosterUser[]
   teams: Team[]
   teamNames: Record<TeamId, string>
+  canEdit: boolean
+  canDelete: boolean
   onUpdate: (id: Task['id'], updated: Partial<Task>) => Promise<void>
   onDelete: (id: Task['id']) => Promise<boolean>
   onClose: () => void
@@ -635,6 +657,7 @@ function CardDetailModal({
           <input
             className="detail-title"
             value={title}
+            readOnly={!canEdit}
             onChange={(e) => setTitle(e.target.value)}
             onBlur={commitTitle}
             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
@@ -643,8 +666,9 @@ function CardDetailModal({
           <textarea
             className="detail-desc"
             value={description}
-            placeholder="Add a description…"
+            placeholder={canEdit ? 'Add a description…' : 'No description'}
             rows={3}
+            readOnly={!canEdit}
             onChange={(e) => setDescription(e.target.value)}
             onBlur={commitDescription}
             aria-label="Card description"
@@ -659,20 +683,23 @@ function CardDetailModal({
           </section>
         </div>
         <aside className="card-modal-props">
+          {!canEdit && (
+            <p className="quiet-text">Read-only — only the assignee, the team PM, or an admin can edit this card.</p>
+          )}
           <div className="prop">
             <span className="prop-label">Status</span>
-            <select value={task.cardStatus} onChange={(e) => commit({ cardStatus: e.target.value as CardStatus })}>
+            <select value={task.cardStatus} disabled={!canEdit} onChange={(e) => commit({ cardStatus: e.target.value as CardStatus })}>
               {CARD_STATUSES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
             </select>
           </div>
           <div className="prop">
             <span className="prop-label">Priority</span>
-            <PriorityPicker name={`detail-priority-${task.id}`} value={task.priority}
+            <PriorityPicker name={`detail-priority-${task.id}`} value={task.priority} disabled={!canEdit}
               onChange={(p) => commit({ priority: p })} />
           </div>
           <div className="prop">
             <span className="prop-label">Assignee</span>
-            <select value={task.assigneeUserId ?? ''}
+            <select value={task.assigneeUserId ?? ''} disabled={!canEdit}
               onChange={(e) => commit({ assigneeUserId: e.target.value || null })}>
               <option value="">Unassigned</option>
               {roster.map((person) => (
@@ -682,11 +709,11 @@ function CardDetailModal({
           </div>
           <div className="prop">
             <span className="prop-label">Due date</span>
-            <input type="date" value={task.dueDate} onChange={(e) => commit({ dueDate: e.target.value })} />
+            <input type="date" value={task.dueDate} disabled={!canEdit} onChange={(e) => commit({ dueDate: e.target.value })} />
           </div>
           <div className="prop">
             <span className="prop-label">Team</span>
-            <select value={task.team} onChange={(e) => commit({ team: e.target.value as TeamId })}>
+            <select value={task.team} disabled={!canEdit} onChange={(e) => commit({ team: e.target.value as TeamId })}>
               {teams.filter((t) => !t.archived || t.slug === task.team).map((t) => (
                 <option key={t.slug} value={t.slug}>{t.name}{t.archived ? ' (archived)' : ''}</option>
               ))}
@@ -694,20 +721,22 @@ function CardDetailModal({
           </div>
           <div className="prop">
             <span className="prop-label">Labels</span>
-            <TagToggleRow selected={visibleTags(task.tags)}
+            <TagToggleRow selected={visibleTags(task.tags)} disabled={!canEdit}
               onChange={(tags) => commit({ tags: buildTags(tags) })} />
           </div>
-          <div className="prop prop-danger">
-            <button
-              type="button"
-              className={`btn btn-sm ${confirmingDelete ? 'btn-danger' : 'btn-ghost'}`}
-              onClick={() => void handleDelete()}
-              onBlur={() => setConfirmingDelete(false)}
-              disabled={isDeleting}
-            >
-              {isDeleting ? 'Deleting…' : confirmingDelete ? 'Really delete? This is permanent' : 'Delete card'}
-            </button>
-          </div>
+          {canDelete && (
+            <div className="prop prop-danger">
+              <button
+                type="button"
+                className={`btn btn-sm ${confirmingDelete ? 'btn-danger' : 'btn-ghost'}`}
+                onClick={() => void handleDelete()}
+                onBlur={() => setConfirmingDelete(false)}
+                disabled={isDeleting}
+              >
+                {isDeleting ? 'Deleting…' : confirmingDelete ? 'Really delete? This is permanent' : 'Delete card'}
+              </button>
+            </div>
+          )}
         </aside>
       </div>
     </ModalShell>
@@ -1095,11 +1124,13 @@ function Dashboard({
     return () => { isActive = false }
   }, [team])
 
+  // All four tiles count open cards only — a card that's Done can't be
+  // overdue or blocked anymore.
   const openTasks = tasks.filter((t) => t.cardStatus !== 'done')
-  const overdueCount = tasks.filter((t) => getDueState(t.dueDate).tone === 'late').length
-  const dueSoonCount = tasks.filter((t) => getDueState(t.dueDate).tone === 'soon').length
-  const blockedCount = tasks.filter((t) => t.tags.includes('Blocked')).length
-  const needHelpCount = tasks.filter((t) => t.tags.includes('Need Help')).length
+  const overdueCount = openTasks.filter((t) => getDueState(t.dueDate).tone === 'late').length
+  const dueSoonCount = openTasks.filter((t) => getDueState(t.dueDate).tone === 'soon').length
+  const blockedCount = openTasks.filter((t) => t.tags.includes('Blocked')).length
+  const needHelpCount = openTasks.filter((t) => t.tags.includes('Need Help')).length
 
   const workload = openTasks.reduce<Record<string, number>>((acc, t) => {
     const name = t.assignee || 'Unassigned'
@@ -1107,7 +1138,9 @@ function Dashboard({
     return acc
   }, {})
   const workloadEntries = Object.entries(workload).sort((a, b) => b[1] - a[1])
-  const maxLoad = Math.max(1, ...workloadEntries.map(([, c]) => c))
+  // Each bar is that person's share of the team's open cards, so a full bar
+  // always means "all of the open work" and imbalance is readable at a glance.
+  const totalOpen = Math.max(1, openTasks.length)
 
   const stats: Array<{ label: string; value: number; tone: 'red' | 'amber' | 'gray' }> = [
     { label: 'Overdue', value: overdueCount, tone: 'red' },
@@ -1128,7 +1161,7 @@ function Dashboard({
       </div>
 
       <section className="panel">
-        <div className="panel-head"><h3 className="panel-title">Workload</h3><span className="panel-note">open cards per person</span></div>
+        <div className="panel-head"><h3 className="panel-title">Workload</h3><span className="panel-note">share of the team's open cards</span></div>
         {workloadEntries.length === 0 ? (
           <p className="quiet-text">No open cards in {teamName}.</p>
         ) : (
@@ -1137,7 +1170,7 @@ function Dashboard({
               <li key={name} className="workload-item">
                 <span className="workload-name">{name}</span>
                 <span className="workload-bar-track">
-                  <span className="workload-bar" style={{ width: `${(count / maxLoad) * 100}%` }} />
+                  <span className="workload-bar" style={{ width: `${(count / totalOpen) * 100}%` }} />
                 </span>
                 <span className="workload-count">{count}</span>
               </li>
@@ -1156,7 +1189,7 @@ function Dashboard({
           <ul className="activity-list">
             {activity.map((event) => (
               <li key={event.id} className="activity-item">
-                <span className="activity-text">{formatEventText(event)} on “{event.cardTitle}”</span>
+                <span className="activity-text">{formatTeamEventText(event)}</span>
                 <span className="activity-time">{formatRelativeTime(event.createdAt)}</span>
               </li>
             ))}
@@ -2087,6 +2120,10 @@ function App() {
 
   const pmTeams = authUser.memberships.filter((m) => m.role === 'pm').map((m) => m.team)
   const isPm = pmTeams.length > 0
+  // Mirrors the server's rules: edits are for the assignee, the card's team PM,
+  // or an admin; deletion adds the creator (accountable — deletions are theirs).
+  const canEditTask = (t: Task) => authUser.isAdmin || pmTeams.includes(t.team) || t.assigneeUserId === authUser.id
+  const canDeleteTask = (t: Task) => authUser.isAdmin || pmTeams.includes(t.team) || t.createdByUserId === authUser.id
   const canSeeDashboard = authUser.isAdmin || isPm
   const canManageCheckins = canSeeDashboard
   const firstTeamSlug = visibleTeams[0]?.slug ?? ''
@@ -2106,14 +2143,24 @@ function App() {
     activeTab === 'qna' ? 'Q&A'
     : activeTab === 'dashboard' ? `${teamNames[dashboardTeamResolved] ?? ''} Dashboard`
     : activeTab === 'notes' ? `${teamNames[notesTeamResolved] ?? notesTeamResolved} Notes`
-    : activeTab === 'checkins' ? (canManageCheckins ? `${teamNames[checkinTeamResolved] ?? ''} Check-ins` : 'My check-ins')
+    : activeTab === 'checkins' && canManageCheckins ? `${teamNames[checkinTeamResolved] ?? ''} Check-ins`
+    : activeTab === 'checkins' || activeTab === 'my-checkins' ? 'My check-ins'
     : activeTab === 'admin' ? 'Manage roles'
     : `${teamNames[activeTab] ?? activeTab} Board`
+
+  // Remounting the keyed wrapper below replays the view-in animation whenever
+  // the tab — or the team inside a PM view — changes.
+  const viewKey =
+    activeTab === 'dashboard' ? `dashboard-${dashboardTeamResolved}`
+    : activeTab === 'notes' ? `notes-${notesTeamResolved}`
+    : activeTab === 'checkins' && canManageCheckins ? `checkins-${checkinTeamResolved}`
+    : activeTab
 
   const viewEyebrow =
     activeTab === 'qna' ? 'Forum'
     : activeTab === 'dashboard' || activeTab === 'notes' ? 'PM view'
-    : activeTab === 'checkins' ? (canManageCheckins ? 'PM view' : 'You')
+    : activeTab === 'checkins' && canManageCheckins ? 'PM view'
+    : activeTab === 'checkins' || activeTab === 'my-checkins' ? 'You'
     : activeTab === 'admin' ? 'Admin'
     : 'Board'
 
@@ -2158,9 +2205,7 @@ function App() {
           )}
           <p className="nav-eyebrow">General</p>
           <NavItem icon="qna" label="Q&A" active={activeTab === 'qna'} onClick={() => selectTab('qna')} />
-          {!canManageCheckins && (
-            <NavItem icon="checkins" label="My Check-ins" active={activeTab === 'checkins'} onClick={() => selectTab('checkins')} />
-          )}
+          <NavItem icon="checkins" label="My Check-ins" active={activeTab === 'my-checkins'} onClick={() => selectTab('my-checkins')} />
           {canSeeDashboard && (
             <p className="nav-eyebrow">Manage</p>
           )}
@@ -2200,20 +2245,21 @@ function App() {
           </div>
           <div className="view-actions">
             {(() => {
-              // Team switcher for the PM views: admins pick among all visible
-              // teams, PMs among the teams they run.
-              const pickerTeams = authUser.isAdmin
-                ? visibleTeams
-                : teams.filter((t) => pmTeams.includes(t.slug))
-              if (pickerTeams.length < 2) return null
-              const pickers: Partial<Record<string, [TeamId, (slug: TeamId) => void]>> = {
-                dashboard: [dashboardTeamResolved, setDashboardTeam],
-                checkins: [checkinTeamResolved, setCheckinTeam],
-                notes: [notesTeamResolved, setNotesTeam],
+              // Team switcher for the PM views. Dashboard and Check-ins let an
+              // admin pick any visible team; PM Notes is strictly the teams the
+              // viewer holds the PM role on (the server rejects anything else,
+              // even for admins, so the picker must match).
+              const pmPickerTeams = teams.filter((t) => pmTeams.includes(t.slug))
+              const managePickerTeams = authUser.isAdmin ? visibleTeams : pmPickerTeams
+              const pickers: Partial<Record<string, [TeamId, (slug: TeamId) => void, Team[]]>> = {
+                dashboard: [dashboardTeamResolved, setDashboardTeam, managePickerTeams],
+                checkins: [checkinTeamResolved, setCheckinTeam, managePickerTeams],
+                notes: [notesTeamResolved, setNotesTeam, pmPickerTeams],
               }
               const picker = pickers[activeTab]
               if (!picker || (activeTab === 'checkins' && !canManageCheckins)) return null
-              const [selected, setSelected] = picker
+              const [selected, setSelected, pickerTeams] = picker
+              if (pickerTeams.length < 2) return null
               return (
                 <div className="segmented">
                   {pickerTeams.map((t) => (
@@ -2247,6 +2293,7 @@ function App() {
         <div className="view-body">
           {error && <p className="error-banner">{error}</p>}
 
+          <div key={viewKey} className="view-fade">
           {activeTab === 'notes' && isPm && notesTeamResolved ? (
             <PmNotes
               key={notesTeamResolved}
@@ -2261,18 +2308,16 @@ function App() {
               teamName={teamNames[dashboardTeamResolved] ?? dashboardTeamResolved}
               tasks={tasksFor(dashboardTeamResolved)}
             />
-          ) : activeTab === 'checkins' ? (
-            canManageCheckins ? (
-              <TeamCheckins
-                key={checkinTeamResolved}
-                team={checkinTeamResolved}
-                teamName={teamNames[checkinTeamResolved] ?? checkinTeamResolved}
-                roster={roster}
-                tasks={tasksFor(checkinTeamResolved)}
-              />
-            ) : (
-              <MyCheckins />
-            )
+          ) : activeTab === 'checkins' && canManageCheckins ? (
+            <TeamCheckins
+              key={checkinTeamResolved}
+              team={checkinTeamResolved}
+              teamName={teamNames[checkinTeamResolved] ?? checkinTeamResolved}
+              roster={roster}
+              tasks={tasksFor(checkinTeamResolved)}
+            />
+          ) : activeTab === 'checkins' || activeTab === 'my-checkins' ? (
+            <MyCheckins />
           ) : activeTab === 'admin' && authUser.isAdmin ? (
             <AdminPanel
               teams={teams}
@@ -2305,12 +2350,14 @@ function App() {
                   sectionId={s.id}
                   label={s.label}
                   tasks={activeTasks.filter((t) => t.cardStatus === s.id)}
+                  canEditCard={canEditTask}
                   onOpen={setSelectedCardId}
                   onDropCard={handleDropCard}
                 />
               ))}
             </div>
           )}
+          </div>
         </div>
       </div>
 
@@ -2323,6 +2370,8 @@ function App() {
             ? visibleTeams
             : [...visibleTeams, ...teams.filter((t) => t.slug === selectedCard.team)]}
           teamNames={teamNames}
+          canEdit={canEditTask(selectedCard)}
+          canDelete={canDeleteTask(selectedCard)}
           onUpdate={handleUpdateTask}
           onDelete={handleDeleteTask}
           onClose={() => setSelectedCardId(null)}

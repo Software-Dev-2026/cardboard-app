@@ -777,7 +777,7 @@ async function ensureSchema() {
 
 async function listCards() {
   return sql`
-    select id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority, order_index
+    select id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index
     from cardboard_cards
     where classroom_id = ${activeClassroom.id}
     order by order_index asc, created_at asc;
@@ -820,7 +820,7 @@ async function createCard(body, user) {
       ${normalizePriority(body.priority)},
       ${(await listCards()).length}
     )
-    returning id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority, order_index;
+    returning id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index;
   `
 
   return created
@@ -908,11 +908,12 @@ async function createAnswer(questionId, body, user) {
 }
 
 async function notifyNewCard(card) {
+  const teamName = (await getTeams()).find((t) => t.slug === card.team)?.name ?? card.team
   await sendSlackMessage({
     text: `New card from ${card.assignee}: ${card.title}`,
     blocks: [
       sectionBlock(`*New card*\\n*${escapeSlack(card.title)}*`),
-      sectionBlock(`Owner: ${escapeSlack(card.assignee)}\\nTeam: ${escapeSlack(card.team)}\\nDue: ${escapeSlack(card.dueDate || 'No date')}`),
+      sectionBlock(`Owner: ${escapeSlack(card.assignee)}\\nTeam: ${escapeSlack(teamName)}\\nDue: ${escapeSlack(card.dueDate || 'No date')}`),
       ...(card.description ? [sectionBlock(escapeSlack(card.description))] : []),
     ],
   })
@@ -984,12 +985,19 @@ async function updateCard(id, body, user) {
   if (!title) throw new HttpError(400, 'Title is required.')
 
   const [before] = await sql`
-    select id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority
+    select id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority
     from cardboard_cards
     where id = ${id} and classroom_id = ${activeClassroom.id}
     limit 1
   `
   if (!before) return null
+
+  // Editing (status, assignee, priority, dates, team moves) is limited to the
+  // card's assignee, a PM of its team, or an admin — everyone else is read-only.
+  const isAssignee = String(before.assignee_user_id ?? '') === String(user.id)
+  if (!user.isAdmin && !isAssignee && !pmTeamsOf(user).includes(before.team)) {
+    throw new HttpError(403, 'Only the assignee, the team PM, or an admin can edit a card.')
+  }
 
   const nextStatus = normalizeStatus(body.cardStatus)
   const nextPriority = normalizePriority(body.priority)
@@ -1031,7 +1039,7 @@ async function updateCard(id, body, user) {
           updated_at = now()
       where id = ${id}
         and classroom_id = ${activeClassroom.id}
-      returning id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority, order_index
+      returning id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index
     `,
     ...events.map(([eventType, field, oldValue, newValue]) => sql`
       insert into cardboard_card_events (card_id, classroom_id, actor_user_id, event_type, field, old_value, new_value)
@@ -1591,6 +1599,7 @@ function cardRowToPayload(row) {
     description: row.description ?? '',
     assignee: row.assignee ?? 'Unassigned',
     assigneeUserId: row.assignee_user_id ?? null,
+    createdByUserId: row.created_by_user_id ?? null,
     dueDate: formatDate(row.due_date),
     tags: Array.isArray(row.tags) ? row.tags : [],
     team: row.team,
@@ -1729,15 +1738,14 @@ function normalizeCardNoteMap(value) {
   )
 }
 
+// Allowed formatting tags keep nothing but their name — every attribute is
+// dropped (quoted or not), so no event handler or style can ride along.
 function sanitizeNoteHtml(value) {
   const text = typeof value === 'string' ? value.slice(0, 20000) : ''
   return text
     .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
-    .replace(/\son\w+="[^"]*"/gi, '')
-    .replace(/\son\w+='[^']*'/gi, '')
-    .replace(/\s(?:style|class|id)="[^"]*"/gi, '')
-    .replace(/\s(?:style|class|id)='[^']*'/gi, '')
-    .replace(/<(\/?)(?!strong\b|b\b|em\b|i\b|u\b|br\b|div\b|p\b)([a-z][^>]*)>/gi, '')
+    .replace(/<(\/?)(strong|b|em|i|u|br|div|p)\b[^>]*>/gi, '<$1$2>')
+    .replace(/<\/?(?!strong\b|b\b|em\b|i\b|u\b|br\b|div\b|p\b)[a-z][^>]*>/gi, '')
 }
 
 // ── Teams registry ───────────────────────────────────────────────────────────
@@ -1799,7 +1807,7 @@ function projectRowToPayload(row) {
   return { slug: row.slug, name: row.name, archived: row.archived, orderIndex: row.order_index }
 }
 
-const RESERVED_TEAM_SLUGS = new Set(['qna', 'notes', 'dashboard', 'admin', 'checkins', 'mine', 'new', 'teams', 'projects'])
+const RESERVED_TEAM_SLUGS = new Set(['qna', 'notes', 'dashboard', 'admin', 'checkins', 'my-checkins', 'mine', 'new', 'teams', 'projects'])
 
 function generateSlug(name, taken) {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'team'

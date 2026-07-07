@@ -35,6 +35,7 @@ export interface Task {
   description: string
   assignee: string
   assigneeUserId: string | null
+  createdByUserId: string | null
   dueDate: string
   tags: string[]
   team: TeamId

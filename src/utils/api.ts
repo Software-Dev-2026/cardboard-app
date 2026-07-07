@@ -166,7 +166,7 @@ export async function fetchTeamActivity(team: TeamId): Promise<TeamActivityEvent
   return data.events
 }
 
-export async function createCard(card: Omit<Task, 'id' | 'assignee'>): Promise<CardPayload> {
+export async function createCard(card: Omit<Task, 'id' | 'assignee' | 'createdByUserId'>): Promise<CardPayload> {
   const data = await apiRequest<CardResponse>('/api/cards', {
     method: 'POST',
     body: JSON.stringify(card),
@@ -178,7 +178,7 @@ export async function deleteCard(id: Task['id']): Promise<void> {
   await apiRequest<OkResponse>(`/api/cards/${id}`, { method: 'DELETE' })
 }
 
-export async function updateCard(id: Task['id'], card: Omit<Task, 'id' | 'assignee'>): Promise<CardPayload> {
+export async function updateCard(id: Task['id'], card: Omit<Task, 'id' | 'assignee' | 'createdByUserId'>): Promise<CardPayload> {
   const data = await apiRequest<CardResponse>(`/api/cards/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(card),
