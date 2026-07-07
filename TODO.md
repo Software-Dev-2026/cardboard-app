@@ -33,7 +33,7 @@ Permission model decided 2026-07-07 (implemented in code, enforced server-side):
 
 ## Live-testing needed for the 2026-07-07 changes (not yet run)
 
-- [ ] As a plain student, open someone else's card: fields disabled, no drag, no delete button; direct `PATCH /api/cards/:id` returns 403
+- [x] As a plain student, open someone else's card: fields disabled, no drag, no delete button; direct `PATCH /api/cards/:id` returns 403 — verified with seeded Test Student session: read-only modal screenshot, `draggable=false`, 0 delete buttons, and a forged PATCH on Luke's dixie-tech-app card returned 403 with the card unchanged (2026-07-07)
 - [ ] As the assignee (non-PM), confirm you CAN edit/drag your card
 - [ ] As a team PM, confirm you can edit any card on your team but NOT cards on other teams
 - [ ] As a PM, confirm the "My Check-ins" tab shows check-ins written about you
