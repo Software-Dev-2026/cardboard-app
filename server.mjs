@@ -1933,7 +1933,7 @@ function projectRowToPayload(row) {
   return { slug: row.slug, name: row.name, archived: row.archived, orderIndex: row.order_index }
 }
 
-const RESERVED_TEAM_SLUGS = new Set(['qna', 'notes', 'dashboard', 'admin', 'checkins', 'my-checkins', 'mine', 'new', 'teams', 'projects', 'review'])
+const RESERVED_TEAM_SLUGS = new Set(['qna', 'notes', 'dashboard', 'admin', 'checkins', 'my-checkins', 'mine', 'new', 'teams', 'projects', 'review', 'profile'])
 
 function generateSlug(name, taken) {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'team'

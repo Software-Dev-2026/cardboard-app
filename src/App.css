@@ -205,29 +205,140 @@
 
 .side-user-caret {
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.85rem;
 }
 
-.side-user-menu {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  right: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: var(--shadow-md);
-  padding: 12px;
+/* ── Profile ──────────────────────────────────────────────────────────────── */
+
+.profile-identity {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.avatar-lg {
+  width: 44px;
+  height: 44px;
+  font-size: 1.05rem;
+}
+
+.profile-copy {
+  flex: 1;
+  min-width: 220px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  z-index: 30;
+  gap: 5px;
 }
 
-.side-user-menu-actions {
+.profile-name-row {
   display: flex;
-  justify-content: space-between;
-  gap: 8px;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.profile-name-input {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 700;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 340px;
+  border-bottom: 1px solid transparent;
+  transition: border-color 110ms ease;
+}
+
+.profile-name-input:hover,
+.profile-name-input:focus {
+  border-bottom-color: var(--border-strong);
+  outline: none;
+}
+
+.profile-hint {
+  font-size: 0.74rem;
+  color: var(--muted);
+  margin: 0;
+}
+
+.profile-roles {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.profile-role-chip {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--gray-soft);
+  color: var(--ink-soft);
+}
+
+.profile-role-chip.role-admin {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.profile-role-chip.role-pm {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.stat-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.profile-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.profile-task-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  text-align: left;
+  transition: background 100ms ease, border-color 100ms ease;
+}
+
+.profile-task-row:hover {
+  background: var(--hover);
+  border-color: var(--border-strong);
+}
+
+.profile-task-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.86rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-task-team {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 /* ── Avatars ──────────────────────────────────────────────────────────────── */

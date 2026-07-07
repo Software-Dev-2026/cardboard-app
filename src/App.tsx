@@ -270,22 +270,17 @@ function TeamNavItem({
 }
 
 // ── SidebarUser ───────────────────────────────────────────────────────────────
-// Only rendered once a user is signed in — the app-level sign-in wall handles
-// the logged-out state, so this component can assume `user` is real.
+// Only rendered once a user is signed in. Clicking it opens the Profile view —
+// display name, roles, assigned cards, and log out all live there.
 
 function SidebarUser({
-  user, teamNames, onLogout, onUserUpdate,
+  user, teamNames, active, onOpenProfile,
 }: {
   user: AuthUser
   teamNames: Record<TeamId, string>
-  onLogout: () => void
-  onUserUpdate: (user: AuthUser) => void
+  active: boolean
+  onOpenProfile: () => void
 }) {
-  const [open, setOpen] = useState(false)
-  const [nameValue, setNameValue] = useState(user.displayName)
-  const [isSaving, setIsSaving] = useState(false)
-  const [nameError, setNameError] = useState('')
-
   const pmMemberships = user.memberships.filter((m) => m.role === 'pm')
   const roleChip = user.isAdmin
     ? 'Admin'
@@ -293,56 +288,13 @@ function SidebarUser({
       ? `PM · ${pmMemberships.map((m) => teamNames[m.team] ?? m.team).join(', ')}`
       : 'Student'
 
-  async function saveDefaultName() {
-    const displayName = nameValue.trim()
-    if (!displayName) { setNameError('Required'); return }
-    setIsSaving(true)
-    setNameError('')
-    try {
-      const updated = await updateDefaultName(displayName)
-      onUserUpdate(updated)
-    } catch (err) {
-      setNameError(err instanceof Error ? err.message : 'Could not save')
-    } finally {
-      setIsSaving(false)
-    }
-  }
-
   return (
     <div className="side-user">
-      {open && (
-        <div className="side-user-menu">
-          <label className="field">
-            <span>Display name</span>
-            <input
-              type="text"
-              value={nameValue}
-              onChange={(e) => setNameValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void saveDefaultName()
-                if (e.key === 'Escape') setNameValue(user.displayName)
-              }}
-            />
-          </label>
-          {nameError && <p className="form-error">{nameError}</p>}
-          <div className="side-user-menu-actions">
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => void saveDefaultName()}
-              disabled={isSaving || !nameValue.trim() || nameValue.trim() === user.displayName}
-            >
-              {isSaving ? 'Saving…' : 'Save name'}
-            </button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={onLogout}>Log out</button>
-          </div>
-        </div>
-      )}
       <button
         type="button"
-        className={`side-user-row ${open ? 'open' : ''}`}
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
+        className={`side-user-row ${active ? 'open' : ''}`}
+        onClick={onOpenProfile}
+        title="Open your profile"
       >
         {user.avatarUrl
           ? <img src={user.avatarUrl} alt="" className="avatar avatar-img" />
@@ -351,8 +303,135 @@ function SidebarUser({
           <span className="side-user-name">{user.displayName}</span>
           <span className="side-user-role">{roleChip}</span>
         </span>
-        <span className="side-user-caret" aria-hidden="true">{open ? '▾' : '▴'}</span>
+        <span className="side-user-caret" aria-hidden="true">›</span>
       </button>
+    </div>
+  )
+}
+
+// ── ProfileView ───────────────────────────────────────────────────────────────
+// The signed-in home: identity + display name editing, roles per team, the
+// cards assigned to you across every board, and log out.
+
+function ProfileView({
+  user, tasks, teamNames, onUserUpdate, onLogout, onOpenCard,
+}: {
+  user: AuthUser
+  tasks: Task[]
+  teamNames: Record<TeamId, string>
+  onUserUpdate: (user: AuthUser) => void
+  onLogout: () => void
+  onOpenCard: (id: Task['id']) => void
+}) {
+  const [nameValue, setNameValue] = useState(user.displayName)
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const [nameError, setNameError] = useState('')
+
+  const mine = tasks.filter((t) => t.assigneeUserId === user.id)
+  const openMine = mine.filter((t) => t.cardStatus !== 'done')
+  const overdueCount = openMine.filter((t) => getDueState(t.dueDate).tone === 'late').length
+  const doneCount = mine.length - openMine.length
+  const sortedOpen = [...openMine].sort((a, b) => (a.dueDate || '9999') <= (b.dueDate || '9999') ? -1 : 1)
+
+  async function saveName() {
+    const displayName = nameValue.trim()
+    if (!displayName) { setNameValue(user.displayName); return }
+    if (displayName === user.displayName) return
+    setSaveState('saving')
+    setNameError('')
+    try {
+      onUserUpdate(await updateDefaultName(displayName))
+      setSaveState('saved')
+    } catch (err) {
+      setSaveState('idle')
+      setNameError(err instanceof Error ? err.message : 'Could not save your name.')
+    }
+  }
+
+  return (
+    <div className="page profile-page">
+      <section className="panel">
+        <div className="profile-identity">
+          {user.avatarUrl
+            ? <img src={user.avatarUrl} alt="" className="avatar avatar-img avatar-lg" />
+            : <span className="avatar avatar-lg">{initialOf(user.displayName)}</span>}
+          <div className="profile-copy">
+            <div className="profile-name-row">
+              <input
+                className="profile-name-input"
+                value={nameValue}
+                aria-label="Display name"
+                onChange={(e) => { setNameValue(e.target.value); setSaveState('idle') }}
+                onBlur={() => void saveName()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur()
+                  if (e.key === 'Escape') setNameValue(user.displayName)
+                }}
+              />
+              <span className={`save-state save-state-${saveState}`}>
+                {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : ''}
+              </span>
+            </div>
+            {nameError && <p className="form-error">{nameError}</p>}
+            <p className="pending-sub">@{user.githubLogin}{user.email ? ` · ${user.email}` : ''}</p>
+            <p className="profile-hint">Click your name to change how it shows across boards, comments, and Q&A.</p>
+            <div className="profile-roles">
+              {user.isAdmin && <span className="profile-role-chip role-admin">Admin</span>}
+              {user.memberships.map((m) => (
+                <span key={m.team} className={`profile-role-chip ${m.role === 'pm' ? 'role-pm' : ''}`}>
+                  {m.role === 'pm' ? 'PM' : 'Member'} · {teamNames[m.team] ?? m.team}
+                </span>
+              ))}
+              {!user.isAdmin && user.memberships.length === 0 && (
+                <span className="profile-role-chip">Student · no team yet</span>
+              )}
+            </div>
+          </div>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onLogout}>Log out</button>
+        </div>
+      </section>
+
+      <div className="stat-grid stat-grid-3">
+        <div className="stat-tile">
+          <span className="stat-value">{String(openMine.length).padStart(2, '0')}</span>
+          <span className="stat-label">Open cards</span>
+        </div>
+        <div className={`stat-tile ${overdueCount > 0 ? 'stat-red' : ''}`}>
+          <span className="stat-value">{String(overdueCount).padStart(2, '0')}</span>
+          <span className="stat-label">Overdue</span>
+        </div>
+        <div className="stat-tile">
+          <span className="stat-value">{String(doneCount).padStart(2, '0')}</span>
+          <span className="stat-label">Done</span>
+        </div>
+      </div>
+
+      <section className="panel">
+        <div className="panel-head">
+          <h3 className="panel-title">Assigned to you</h3>
+          <span className="panel-note">open cards across all boards</span>
+        </div>
+        {sortedOpen.length === 0 ? (
+          <p className="quiet-text">Nothing on your plate — pick up a card from a board or create one.</p>
+        ) : (
+          <ul className="profile-task-list">
+            {sortedOpen.map((task) => {
+              const dueState = getDueState(task.dueDate)
+              return (
+                <li key={task.id}>
+                  <button type="button" className="profile-task-row" onClick={() => onOpenCard(task.id)}>
+                    <span className={`col-dot col-dot-${task.cardStatus}`} />
+                    <span className="profile-task-title">{task.title}</span>
+                    <span className="profile-task-team">{teamNames[task.team] ?? task.team}</span>
+                    <span className={`priority-badge priority-${task.priority}`}>{priorityLabel(task.priority)}</span>
+                    <span className={`due-chip due-${dueState.tone}`}>{dueState.label}</span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </section>
     </div>
   )
 }
@@ -2379,6 +2458,7 @@ function App() {
     : activeTab === 'checkins' || activeTab === 'my-checkins' ? 'My check-ins'
     : activeTab === 'admin' ? 'Manage roles'
     : activeTab === 'review' ? 'Review new students'
+    : activeTab === 'profile' ? 'Your profile'
     : `${teamNames[activeTab] ?? activeTab} Board`
 
   // Remounting the keyed wrapper below replays the view-in animation whenever
@@ -2395,6 +2475,7 @@ function App() {
     : activeTab === 'checkins' && canManageCheckins ? 'PM view'
     : activeTab === 'checkins' || activeTab === 'my-checkins' ? 'You'
     : activeTab === 'admin' || activeTab === 'review' ? 'Admin'
+    : activeTab === 'profile' ? 'You'
     : 'Board'
 
   return (
@@ -2468,11 +2549,10 @@ function App() {
         <div className="sidebar-foot">
           <ThemeToggle theme={theme} onToggle={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} />
           <SidebarUser
-            key={authUser.id}
             user={authUser}
             teamNames={teamNames}
-            onLogout={() => void handleLogout()}
-            onUserUpdate={setAuthUser}
+            active={activeTab === 'profile'}
+            onOpenProfile={() => selectTab('profile')}
           />
         </div>
       </aside>
@@ -2558,6 +2638,15 @@ function App() {
             />
           ) : activeTab === 'checkins' || activeTab === 'my-checkins' ? (
             <MyCheckins />
+          ) : activeTab === 'profile' ? (
+            <ProfileView
+              user={authUser}
+              tasks={tasks}
+              teamNames={teamNames}
+              onUserUpdate={setAuthUser}
+              onLogout={() => void handleLogout()}
+              onOpenCard={setSelectedCardId}
+            />
           ) : activeTab === 'review' && authUser.isAdmin ? (
             <ReviewStudents pending={pendingUsers} onResolve={handleResolveSignup} />
           ) : activeTab === 'admin' && authUser.isAdmin ? (
