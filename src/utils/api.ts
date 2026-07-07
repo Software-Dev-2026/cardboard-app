@@ -1,4 +1,4 @@
-import type { CardComment, CardEvent, Checkin, CheckinGoal, GoalStatus, Membership, Project, QnaAnswer, QnaQuestion, RosterUser, Task, Team, TeamActivityEvent, TeamId } from '../types'
+import type { CardComment, CardEvent, Checkin, CheckinGoal, GoalStatus, Membership, PendingUser, Project, QnaAnswer, QnaQuestion, RosterUser, Task, Team, TeamActivityEvent, TeamId } from '../types'
 
 type CardPayload = Omit<Task, 'id'> & { id: string }
 
@@ -10,6 +10,7 @@ export interface AuthUser {
   avatarUrl: string | null
   memberships: Membership[]
   isAdmin: boolean
+  approvalStatus: 'pending' | 'approved'
 }
 
 interface CardsResponse {
@@ -139,6 +140,25 @@ export async function updateUserMemberships(userId: string, memberships: Members
   const data = await apiRequest<UserResponse>(`/api/admin/users/${userId}/memberships`, {
     method: 'PUT',
     body: JSON.stringify({ memberships }),
+  })
+  return data.user
+}
+
+export async function fetchPendingUsers(): Promise<PendingUser[]> {
+  const data = await apiRequest<{ users: PendingUser[] }>('/api/admin/pending-users')
+  return data.users
+}
+
+export async function resolveSignup(userId: string, approve: boolean): Promise<void> {
+  await apiRequest<OkResponse>(`/api/admin/users/${userId}/${approve ? 'approve' : 'reject'}`, {
+    method: 'POST',
+  })
+}
+
+export async function setUserAdmin(userId: string, isAdmin: boolean): Promise<RosterUser> {
+  const data = await apiRequest<UserResponse>(`/api/admin/users/${userId}/admin`, {
+    method: 'PATCH',
+    body: JSON.stringify({ isAdmin }),
   })
   return data.user
 }

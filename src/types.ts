@@ -106,4 +106,18 @@ export interface RosterUser {
   displayName: string
   githubLogin: string
   memberships: Membership[]
+  isAdmin: boolean
+  // Set via ADMIN_GITHUB_LOGINS on the server — always an admin, can't be
+  // demoted from the Admin tab.
+  envAdmin: boolean
+}
+
+// A GitHub sign-in waiting at the approval gate.
+export interface PendingUser {
+  id: string
+  displayName: string
+  githubLogin: string
+  avatarUrl: string | null
+  email: string | null
+  requestedAt: string
 }

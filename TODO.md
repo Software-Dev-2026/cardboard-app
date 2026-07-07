@@ -13,6 +13,24 @@ Permission model decided 2026-07-07 (implemented in code, enforced server-side):
 - **Dashboard tiles** (Overdue / Due soon / Blocked / Need help) count **open (non-Done) cards only**.
 - **My Check-ins** is its own tab (`my-checkins`) visible to *everyone*, including PMs/admins — a PM can now read check-ins written about them.
 
+## Sign-up approval gate + admin promotion (added 2026-07-07)
+
+- New GitHub sign-ins land in `approval_status = 'pending'`: they see a waiting
+  screen (polls every 8s) and every API call except `/api/me` + logout is 403
+  until approved. Existing accounts were backfilled to approved.
+- Admins get a **Review students** tab (badge = waiting count) with
+  Approve / Reject per request and a link to the GitHub profile for judging
+  suspicious sign-ins. Reject deletes the account row (sessions cascade), so
+  the person lands back at sign-in and can simply request again — it's a
+  "not yet", not a ban.
+- Admin can be granted per-user from the Admin tab (Teams & roles table,
+  new Admin column) — for a teacher aid etc. `ADMIN_GITHUB_LOGINS` env admins
+  always stay admin (chip disabled), and you can't remove your own access.
+- Verified end-to-end 2026-07-07 with seeded fake sign-ups: waiting screen,
+  403 gate, approve → roster, reject → row deleted → sign-in wall,
+  UI admin toggle, env-admin lock, self-demote guard. Still worth one real
+  pass when the first classmate signs in.
+
 ## Live-testing needed for the 2026-07-07 changes (not yet run)
 
 - [ ] As a plain student, open someone else's card: fields disabled, no drag, no delete button; direct `PATCH /api/cards/:id` returns 403

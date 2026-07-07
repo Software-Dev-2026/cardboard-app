@@ -114,6 +114,38 @@ async function handleApi(req, res, url) {
     return
   }
 
+  if (url.pathname === '/api/admin/pending-users' && req.method === 'GET') {
+    await requireAdmin(req)
+    const users = await listPendingUsers()
+    sendJson(res, 200, { users })
+    return
+  }
+
+  const signupReviewMatch = url.pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})\/(approve|reject)$/i)
+  if (signupReviewMatch && req.method === 'POST') {
+    await requireAdmin(req)
+    const resolved = await resolveSignupRequest(signupReviewMatch[1], signupReviewMatch[2].toLowerCase() === 'approve')
+    if (!resolved) {
+      sendJson(res, 404, { error: 'Sign-up request not found.' })
+      return
+    }
+    sendJson(res, 200, { ok: true })
+    return
+  }
+
+  const adminFlagMatch = url.pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})\/admin$/i)
+  if (adminFlagMatch && req.method === 'PATCH') {
+    const actor = await requireAdmin(req)
+    const body = await readJson(req)
+    const updated = await setUserAdmin(adminFlagMatch[1], Boolean(body.isAdmin), actor)
+    if (!updated) {
+      sendJson(res, 404, { error: 'User not found.' })
+      return
+    }
+    sendJson(res, 200, { user: updated })
+    return
+  }
+
   const adminMembershipsMatch = url.pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})\/memberships$/i)
   if (adminMembershipsMatch && req.method === 'PUT') {
     await requireAdmin(req)
@@ -457,6 +489,25 @@ async function ensureSchema() {
   await sql`
     create index if not exists cardboard_users_role_team_idx
       on cardboard_users (role, team)
+  `
+
+  // Admin can also be granted from the Admin tab (e.g. a teacher aid); the
+  // ADMIN_GITHUB_LOGINS env list still always wins and can't be revoked here.
+  await sql`
+    alter table cardboard_users
+      add column if not exists is_admin boolean not null default false
+  `
+
+  // Sign-up approval gate. The column is added WITHOUT a default so only rows
+  // that predate the gate are null — the backfill below marks those approved
+  // once, and every new sign-in inserts 'pending' explicitly.
+  await sql`
+    alter table cardboard_users
+      add column if not exists approval_status text check (approval_status in ('pending', 'approved'))
+  `
+
+  await sql`
+    update cardboard_users set approval_status = 'approved' where approval_status is null
   `
 
   await sql`
@@ -1154,24 +1205,88 @@ async function createCardComment(cardId, body, user) {
 
 async function listRoster() {
   const [rows, memberRows] = await Promise.all([
-    sql`select id, display_name, github_login from cardboard_users order by display_name asc`,
+    sql`select id, display_name, github_login, is_admin, approval_status from cardboard_users order by display_name asc`,
     sql`select user_id, team_slug, role from cardboard_team_members order by created_at`,
   ])
 
+  // Pending sign-ups stay out of the roster (and every assignee picker) until
+  // an admin approves them from the Review students tab.
+  return rows
+    .filter((row) => isAdminLogin(row.github_login) || row.is_admin || (row.approval_status ?? 'approved') === 'approved')
+    .map((row) => ({
+      id: row.id,
+      displayName: row.display_name,
+      githubLogin: row.github_login,
+      isAdmin: isAdminLogin(row.github_login) || Boolean(row.is_admin),
+      envAdmin: isAdminLogin(row.github_login),
+      memberships: memberRows
+        .filter((m) => m.user_id === row.id)
+        .map((m) => ({ team: m.team_slug, role: m.role })),
+    }))
+}
+
+async function listPendingUsers() {
+  const rows = await sql`
+    select id, display_name, github_login, avatar_url, email, created_at
+    from cardboard_users
+    where approval_status = 'pending'
+    order by created_at asc
+  `
   return rows.map((row) => ({
     id: row.id,
     displayName: row.display_name,
     githubLogin: row.github_login,
-    memberships: memberRows
-      .filter((m) => m.user_id === row.id)
-      .map((m) => ({ team: m.team_slug, role: m.role })),
+    avatarUrl: row.avatar_url,
+    email: row.email,
+    requestedAt: row.created_at,
   }))
+}
+
+// Approve opens the door; reject deletes the row outright (sessions cascade
+// away), so the person lands back on the sign-in screen and can request
+// again — a rejection is a "not yet", not a ban.
+async function resolveSignupRequest(userId, approve) {
+  const [pending] = await sql`
+    select id from cardboard_users where id = ${userId} and approval_status = 'pending' limit 1
+  `
+  if (!pending) return null
+  if (approve) {
+    await sql`update cardboard_users set approval_status = 'approved', updated_at = now() where id = ${userId}`
+  } else {
+    await sql`delete from cardboard_users where id = ${userId}`
+  }
+  return pending
+}
+
+async function setUserAdmin(userId, makeAdmin, actor) {
+  // Blocking self-demotion keeps the last DB admin from locking themselves
+  // out; env-list admins are unaffected either way (the env list always wins).
+  if (!makeAdmin && String(userId) === String(actor.id)) {
+    throw new HttpError(400, 'You cannot remove your own admin access.')
+  }
+  const [updated] = await sql`
+    update cardboard_users set is_admin = ${makeAdmin}, updated_at = now()
+    where id = ${userId}
+    returning id, display_name, github_login, is_admin
+  `
+  if (!updated) return null
+  const memberRows = await sql`
+    select team_slug, role from cardboard_team_members where user_id = ${userId} order by created_at
+  `
+  return {
+    id: updated.id,
+    displayName: updated.display_name,
+    githubLogin: updated.github_login,
+    isAdmin: isAdminLogin(updated.github_login) || Boolean(updated.is_admin),
+    envAdmin: isAdminLogin(updated.github_login),
+    memberships: memberRows.map((m) => ({ team: m.team_slug, role: m.role })),
+  }
 }
 
 // Replaces a user's full membership set: [{team, role: 'member'|'pm'}, …].
 async function updateUserMemberships(userId, body) {
   const [existing] = await sql`
-    select id, display_name, github_login from cardboard_users where id = ${userId} limit 1
+    select id, display_name, github_login, is_admin from cardboard_users where id = ${userId} limit 1
   `
   if (!existing) return null
 
@@ -1197,6 +1312,8 @@ async function updateUserMemberships(userId, body) {
     id: existing.id,
     displayName: existing.display_name,
     githubLogin: existing.github_login,
+    isAdmin: isAdminLogin(existing.github_login) || Boolean(existing.is_admin),
+    envAdmin: isAdminLogin(existing.github_login),
     memberships,
   }
 }
@@ -1320,7 +1437,7 @@ async function finishGithubLogin(req, res, url) {
 
   const [user] = await sql`
     insert into cardboard_users (
-      github_id, github_login, display_name, email, avatar_url, updated_at
+      github_id, github_login, display_name, email, avatar_url, approval_status, updated_at
     )
     values (
       ${String(githubUser.id)},
@@ -1328,6 +1445,7 @@ async function finishGithubLogin(req, res, url) {
       ${githubUser.name || githubUser.login},
       ${email},
       ${githubUser.avatar_url ?? null},
+      'pending',
       now()
     )
     on conflict (github_id) do update
@@ -1381,7 +1499,7 @@ async function getCurrentUser(req) {
   if (!sessionToken) return null
 
   const [user] = await sql`
-    select u.id, u.github_login, u.display_name, u.email, u.avatar_url
+    select u.id, u.github_login, u.display_name, u.email, u.avatar_url, u.is_admin, u.approval_status
     from cardboard_sessions s
     join cardboard_users u on u.id = s.user_id
     where s.token_hash = ${hashToken(sessionToken)}
@@ -1403,7 +1521,7 @@ async function updateCurrentUser(user, body) {
     set display_name = ${displayName},
         updated_at = now()
     where id = ${user.id}
-    returning id, github_login, display_name, email, avatar_url
+    returning id, github_login, display_name, email, avatar_url, is_admin, approval_status
   `
 
   return userRowToPayload(updated, await membershipsOf(updated.id))
@@ -1553,6 +1671,7 @@ async function updateCheckinGoal(goalId, body, user) {
 }
 
 function userRowToPayload(row, memberships) {
+  const isAdmin = isAdminLogin(row.github_login) || Boolean(row.is_admin)
   return {
     id: row.id,
     githubLogin: row.github_login,
@@ -1560,7 +1679,9 @@ function userRowToPayload(row, memberships) {
     email: row.email,
     avatarUrl: row.avatar_url,
     memberships: memberships ?? row.memberships ?? [],
-    isAdmin: isAdminLogin(row.github_login),
+    isAdmin,
+    // Admins never wait at the approval gate.
+    approvalStatus: isAdmin ? 'approved' : (row.approval_status ?? 'approved'),
   }
 }
 
@@ -1575,6 +1696,11 @@ function isAdminLogin(githubLogin) {
 async function requireCurrentUser(req) {
   const user = await getCurrentUser(req)
   if (!user) throw new HttpError(401, 'Sign in to continue.')
+  // The approval gate: a pending account can see /api/me (the waiting screen
+  // polls it) and log out, but nothing else until an admin lets them in.
+  if (user.approvalStatus !== 'approved') {
+    throw new HttpError(403, 'This account is waiting for admin approval.')
+  }
   return user
 }
 
@@ -1807,7 +1933,7 @@ function projectRowToPayload(row) {
   return { slug: row.slug, name: row.name, archived: row.archived, orderIndex: row.order_index }
 }
 
-const RESERVED_TEAM_SLUGS = new Set(['qna', 'notes', 'dashboard', 'admin', 'checkins', 'my-checkins', 'mine', 'new', 'teams', 'projects'])
+const RESERVED_TEAM_SLUGS = new Set(['qna', 'notes', 'dashboard', 'admin', 'checkins', 'my-checkins', 'mine', 'new', 'teams', 'projects', 'review'])
 
 function generateSlug(name, taken) {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'team'

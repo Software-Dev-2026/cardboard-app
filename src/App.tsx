@@ -3,15 +3,15 @@ import type { DragEvent, FormEvent, KeyboardEvent, MouseEvent, ReactNode } from 
 import './App.css'
 import {
   createAnswer, createCard, createCardComment, createCheckin, createProject, createQuestion, createTeam,
-  deleteCard, fetchAdminUsers, fetchCardComments, fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins, fetchPmNotes,
-  fetchQuestions, fetchRoster, fetchTeamActivity, fetchTeamCheckins, fetchTeams, logout, savePmNotes,
-  updateCard, updateCheckinGoalStatus, updateCheckinNotes, updateDefaultName, updateProject, updateTeam,
-  updateUserMemberships,
+  deleteCard, fetchAdminUsers, fetchCardComments, fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins,
+  fetchPendingUsers, fetchPmNotes, fetchQuestions, fetchRoster, fetchTeamActivity, fetchTeamCheckins, fetchTeams,
+  logout, resolveSignup, savePmNotes, setUserAdmin, updateCard, updateCheckinGoalStatus, updateCheckinNotes,
+  updateDefaultName, updateProject, updateTeam, updateUserMemberships,
 } from './utils/api'
 import type { AuthUser } from './utils/api'
 import type {
-  CardComment, CardEvent, CardStatus, Checkin, GoalStatus, MemberRole, Membership, Priority, Project, QnaQuestion,
-  RosterUser, TabId, Task, Team, TeamActivityEvent, TeamId,
+  CardComment, CardEvent, CardStatus, Checkin, GoalStatus, MemberRole, Membership, PendingUser, Priority, Project,
+  QnaQuestion, RosterUser, TabId, Task, Team, TeamActivityEvent, TeamId,
 } from './types'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -183,7 +183,7 @@ function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }
 
 // ── Sidebar nav items ─────────────────────────────────────────────────────────
 
-function NavIcon({ kind }: { kind: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin' | 'checkins' }) {
+function NavIcon({ kind }: { kind: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin' | 'checkins' | 'review' }) {
   const common = {
     width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none' as const,
     stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
@@ -202,13 +202,15 @@ function NavIcon({ kind }: { kind: 'board' | 'qna' | 'dashboard' | 'notes' | 'ad
       return <svg {...common}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></svg>
     case 'checkins':
       return <svg {...common}><polyline points="9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
+    case 'review':
+      return <svg {...common}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><polyline points="16 11 18 13 22 9" /></svg>
   }
 }
 
 function NavItem({
   icon, label, active, onClick, badge,
 }: {
-  icon: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin' | 'checkins'
+  icon: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin' | 'checkins' | 'review'
   label: string
   active: boolean
   onClick: () => void
@@ -1599,6 +1601,124 @@ function MyCheckins() {
   )
 }
 
+// ── Pending approval ──────────────────────────────────────────────────────────
+// New sign-ins wait here until an admin approves them from Review students.
+// The poll notices both outcomes: approval opens the app; rejection deletes
+// the account server-side, so /api/me returns no user and the sign-in wall
+// comes back for another try.
+
+function PendingApprovalScreen({
+  user, onStatusChange, onLogout,
+}: {
+  user: AuthUser
+  onStatusChange: (user: AuthUser | null) => void
+  onLogout: () => void
+}) {
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      fetchMe()
+        .then((data) => {
+          if (!data.user || data.user.approvalStatus === 'approved') onStatusChange(data.user)
+        })
+        .catch(() => { /* still waiting */ })
+    }, 8000)
+    return () => window.clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return (
+    <div className="signin-wall">
+      <div className="signin-card">
+        <Wordmark />
+        <div className="pending-identity">
+          {user.avatarUrl
+            ? <img src={user.avatarUrl} alt="" className="avatar avatar-img" />
+            : <span className="avatar">{initialOf(user.displayName)}</span>}
+          <span className="pending-identity-copy">
+            <span className="side-user-name">{user.displayName}</span>
+            <span className="pending-sub">@{user.githubLogin}</span>
+          </span>
+        </div>
+        <p className="signin-copy">
+          You're signed in — a teacher just needs to approve this account before
+          you can join the boards. Hang tight; this page opens on its own once
+          you're in.
+        </p>
+        <p className="pending-status">Checking automatically…</p>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onLogout}>Log out</button>
+        <p className="signin-foot">Dixie Tech · Software Development</p>
+      </div>
+    </div>
+  )
+}
+
+function ReviewStudents({
+  pending, onResolve,
+}: {
+  pending: PendingUser[]
+  onResolve: (id: string, approve: boolean) => Promise<void>
+}) {
+  const [busyId, setBusyId] = useState('')
+
+  async function resolve(id: string, approve: boolean) {
+    setBusyId(id)
+    try {
+      await onResolve(id, approve)
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  return (
+    <div className="page">
+      <section className="panel">
+        <div className="panel-head">
+          <h3 className="panel-title">Sign-up requests</h3>
+          <span className="panel-note">
+            {pending.length === 0 ? 'nothing waiting' : `${pending.length} waiting`}
+          </span>
+        </div>
+        {pending.length === 0 ? (
+          <p className="quiet-text">No one is waiting — new GitHub sign-ins land here for approval before they can enter the app.</p>
+        ) : (
+          <ul className="pending-list">
+            {pending.map((person) => (
+              <li key={person.id} className="pending-row">
+                {person.avatarUrl
+                  ? <img src={person.avatarUrl} alt="" className="avatar avatar-img" />
+                  : <span className="avatar">{initialOf(person.displayName)}</span>}
+                <div className="pending-copy">
+                  <span className="pending-name">{person.displayName}</span>
+                  <span className="pending-sub">
+                    @{person.githubLogin}{person.email ? ` · ${person.email}` : ''} · requested {formatRelativeTime(person.requestedAt)}
+                  </span>
+                </div>
+                <a
+                  className="btn btn-ghost btn-sm"
+                  href={`https://github.com/${person.githubLogin}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  GitHub profile
+                </a>
+                <button type="button" className="btn btn-primary btn-sm" disabled={busyId === person.id}
+                  onClick={() => void resolve(person.id, true)}>
+                  Approve
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm btn-reject" disabled={busyId === person.id}
+                  title="Removes the request — they can sign in again to re-request"
+                  onClick={() => void resolve(person.id, false)}>
+                  Reject
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  )
+}
+
 // ── AdminPanel ────────────────────────────────────────────────────────────────
 
 function InlineRenameInput({
@@ -1817,6 +1937,16 @@ function AdminPanel({
     }
   }
 
+  async function handleAdminChange(person: RosterUser) {
+    setError('')
+    try {
+      const updated = await setUserAdmin(person.id, !person.isAdmin)
+      setUsers((cur) => cur.map((u) => (u.id === person.id ? updated : u)))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update admin access.')
+    }
+  }
+
   return (
     <div className="page">
       {error && <p className="form-error">{error}</p>}
@@ -1879,7 +2009,7 @@ function AdminPanel({
         <div className="panel table-panel">
           <table className="admin-table">
             <thead>
-              <tr><th>Name</th><th>GitHub</th><th>Teams &amp; roles</th></tr>
+              <tr><th>Name</th><th>GitHub</th><th>Teams &amp; roles</th><th>Admin</th></tr>
             </thead>
             <tbody>
               {users.map((person) => (
@@ -1898,6 +2028,21 @@ function AdminPanel({
                       onChange={(memberships) => void handleMembershipsChange(person.id, memberships)}
                     />
                   </td>
+                  <td>
+                    <button
+                      type="button"
+                      className={`membership-role ${person.isAdmin ? 'is-pm' : ''}`}
+                      disabled={person.envAdmin}
+                      title={
+                        person.envAdmin
+                          ? 'Always an admin — set in the server config'
+                          : person.isAdmin ? 'Remove admin access' : 'Make this person an admin'
+                      }
+                      onClick={() => void handleAdminChange(person)}
+                    >
+                      {person.isAdmin ? 'Admin' : 'Student'}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1913,6 +2058,7 @@ function AdminPanel({
 function App() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [roster, setRoster] = useState<RosterUser[]>([])
+  const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([])
   const [teams, setTeams] = useState<Team[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [activeTab, setActiveTab] = useState<TabId>('')
@@ -1960,18 +2106,23 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!authUser) return
+    // No data requests while the account waits at the approval gate — the
+    // server would 403 them all anyway.
+    if (!authUser || authUser.approvalStatus !== 'approved') return
+    const isAdmin = authUser.isAdmin
     let isActive = true
     async function load() {
       try {
         setIsLoading(true); setError('')
-        const [cards, questions, users, teamData] = await Promise.all([
+        const [cards, questions, users, teamData, pending] = await Promise.all([
           fetchCards(), fetchQuestions(), fetchRoster(), fetchTeams(),
+          isAdmin ? fetchPendingUsers() : Promise.resolve([]),
         ])
         if (isActive) {
           setTasks(cards)
           setQnaItems(questions)
           setRoster(users)
+          setPendingUsers(pending)
           setTeams(teamData.teams)
           setProjects(teamData.projects)
           const archivedProjects = new Set(teamData.projects.filter((p) => p.archived).map((p) => p.slug))
@@ -2144,6 +2295,30 @@ function App() {
     setAuthUser(null)
   }
 
+  async function handleResolveSignup(userId: string, approve: boolean) {
+    setError('')
+    try {
+      await resolveSignup(userId, approve)
+      setPendingUsers((cur) => cur.filter((u) => u.id !== userId))
+      // A newly approved student should show up in rosters and assignee
+      // pickers right away.
+      if (approve) fetchRoster().then(setRoster).catch(() => {})
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update the request.')
+    }
+  }
+
+  // Re-check for new sign-up requests whenever the Review tab is opened.
+  useEffect(() => {
+    if (activeTab !== 'review' || !authUser?.isAdmin) return
+    let isActive = true
+    fetchPendingUsers()
+      .then((users) => { if (isActive) setPendingUsers(users) })
+      .catch(() => {})
+    return () => { isActive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab])
+
   if (!authUser) {
     return (
       <div className="signin-wall">
@@ -2162,6 +2337,16 @@ function App() {
           <p className="signin-foot">Dixie Tech · Software Development</p>
         </div>
       </div>
+    )
+  }
+
+  if (authUser.approvalStatus !== 'approved') {
+    return (
+      <PendingApprovalScreen
+        user={authUser}
+        onStatusChange={setAuthUser}
+        onLogout={() => void handleLogout()}
+      />
     )
   }
 
@@ -2193,6 +2378,7 @@ function App() {
     : activeTab === 'checkins' && canManageCheckins ? `${teamNames[checkinTeamResolved] ?? ''} Check-ins`
     : activeTab === 'checkins' || activeTab === 'my-checkins' ? 'My check-ins'
     : activeTab === 'admin' ? 'Manage roles'
+    : activeTab === 'review' ? 'Review new students'
     : `${teamNames[activeTab] ?? activeTab} Board`
 
   // Remounting the keyed wrapper below replays the view-in animation whenever
@@ -2208,7 +2394,7 @@ function App() {
     : activeTab === 'dashboard' || activeTab === 'notes' ? 'PM view'
     : activeTab === 'checkins' && canManageCheckins ? 'PM view'
     : activeTab === 'checkins' || activeTab === 'my-checkins' ? 'You'
-    : activeTab === 'admin' ? 'Admin'
+    : activeTab === 'admin' || activeTab === 'review' ? 'Admin'
     : 'Board'
 
   return (
@@ -2269,6 +2455,13 @@ function App() {
             <>
               <p className="nav-eyebrow">Admin</p>
               <NavItem icon="admin" label="Admin" active={activeTab === 'admin'} onClick={() => selectTab('admin')} />
+              <NavItem
+                icon="review"
+                label="Review students"
+                active={activeTab === 'review'}
+                onClick={() => selectTab('review')}
+                badge={pendingUsers.length > 0 ? String(pendingUsers.length) : undefined}
+              />
             </>
           )}
         </nav>
@@ -2365,6 +2558,8 @@ function App() {
             />
           ) : activeTab === 'checkins' || activeTab === 'my-checkins' ? (
             <MyCheckins />
+          ) : activeTab === 'review' && authUser.isAdmin ? (
+            <ReviewStudents pending={pendingUsers} onResolve={handleResolveSignup} />
           ) : activeTab === 'admin' && authUser.isAdmin ? (
             <AdminPanel
               teams={teams}

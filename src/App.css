@@ -1916,6 +1916,91 @@
   font-size: 0.8rem;
 }
 
+/* ── Sign-up review ───────────────────────────────────────────────────────── */
+
+.pending-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pending-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.pending-copy {
+  flex: 1;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pending-name {
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.pending-sub {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--muted);
+}
+
+.btn-reject {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 35%, transparent);
+}
+
+.btn-reject:hover:not(:disabled) {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.membership-role:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Waiting screen (pending approval) */
+
+.pending-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pending-identity-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pending-status {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent-ink);
+  margin: 0;
+  animation: pending-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 /* ── Sign-in wall ─────────────────────────────────────────────────────────── */
 
 .signin-wall {
