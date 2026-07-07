@@ -1435,6 +1435,9 @@ async function finishGithubLogin(req, res, url) {
     ? githubEmails.find((item) => item.primary && item.verified)?.email ?? githubUser.email ?? null
     : githubUser.email ?? null
 
+  // Env admins skip the approval gate entirely — otherwise the very first
+  // sign-in on a fresh deployment has no admin who could approve anyone.
+  const envAdmin = isAdminLogin(githubUser.login)
   const [user] = await sql`
     insert into cardboard_users (
       github_id, github_login, display_name, email, avatar_url, approval_status, updated_at
@@ -1445,7 +1448,7 @@ async function finishGithubLogin(req, res, url) {
       ${githubUser.name || githubUser.login},
       ${email},
       ${githubUser.avatar_url ?? null},
-      'pending',
+      ${envAdmin ? 'approved' : 'pending'},
       now()
     )
     on conflict (github_id) do update
@@ -1453,6 +1456,10 @@ async function finishGithubLogin(req, res, url) {
           display_name = excluded.display_name,
           email = excluded.email,
           avatar_url = excluded.avatar_url,
+          approval_status = case
+            when ${envAdmin} then 'approved'
+            else cardboard_users.approval_status
+          end,
           updated_at = now()
     returning id;
   `
