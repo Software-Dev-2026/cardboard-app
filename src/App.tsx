@@ -208,19 +208,20 @@ function NavIcon({ kind }: { kind: 'board' | 'qna' | 'dashboard' | 'notes' | 'ad
 }
 
 function NavItem({
-  icon, label, active, onClick, badge,
+  icon, label, active, onClick, dot,
 }: {
   icon: 'board' | 'qna' | 'dashboard' | 'notes' | 'admin' | 'checkins' | 'review'
   label: string
   active: boolean
   onClick: () => void
-  badge?: string
+  // Presence indicator (e.g. "sign-ups are waiting") — deliberately not a count.
+  dot?: boolean
 }) {
   return (
     <button type="button" className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>
       <NavIcon kind={icon} />
       <span className="nav-item-label">{label}</span>
-      {badge !== undefined && <span className="nav-item-badge">{badge}</span>}
+      {dot && <span className="nav-item-dot" aria-label="needs attention" />}
     </button>
   )
 }
@@ -228,9 +229,9 @@ function NavItem({
 // A team board link that supports renaming its label in place (admins only;
 // the rename persists through the team API).
 function TeamNavItem({
-  label, active, count, onClick, onRename,
+  label, active, onClick, onRename,
 }: {
-  label: string; active: boolean; count: number; onClick: () => void; onRename?: (n: string) => void
+  label: string; active: boolean; onClick: () => void; onRename?: (n: string) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(label)
@@ -264,7 +265,6 @@ function TeamNavItem({
       {active && onRename && (
         <span className="nav-rename-icon" onClick={startEdit} title="Rename board" role="button">✎</span>
       )}
-      <span className="nav-item-badge">{count}</span>
     </button>
   )
 }
@@ -327,10 +327,7 @@ function ProfileView({
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
   const [nameError, setNameError] = useState('')
 
-  const mine = tasks.filter((t) => t.assigneeUserId === user.id)
-  const openMine = mine.filter((t) => t.cardStatus !== 'done')
-  const overdueCount = openMine.filter((t) => getDueState(t.dueDate).tone === 'late').length
-  const doneCount = mine.length - openMine.length
+  const openMine = tasks.filter((t) => t.assigneeUserId === user.id && t.cardStatus !== 'done')
   const sortedOpen = [...openMine].sort((a, b) => (a.dueDate || '9999') <= (b.dueDate || '9999') ? -1 : 1)
 
   async function saveName() {
@@ -390,21 +387,6 @@ function ProfileView({
           <button type="button" className="btn btn-ghost btn-sm" onClick={onLogout}>Log out</button>
         </div>
       </section>
-
-      <div className="stat-grid stat-grid-3">
-        <div className="stat-tile">
-          <span className="stat-value">{String(openMine.length).padStart(2, '0')}</span>
-          <span className="stat-label">Open cards</span>
-        </div>
-        <div className={`stat-tile ${overdueCount > 0 ? 'stat-red' : ''}`}>
-          <span className="stat-value">{String(overdueCount).padStart(2, '0')}</span>
-          <span className="stat-label">Overdue</span>
-        </div>
-        <div className="stat-tile">
-          <span className="stat-value">{String(doneCount).padStart(2, '0')}</span>
-          <span className="stat-label">Done</span>
-        </div>
-      </div>
 
       <section className="panel">
         <div className="panel-head">
@@ -712,7 +694,6 @@ function BoardColumn({
       <header className="col-head">
         <span className={`col-dot col-dot-${sectionId}`} />
         <span className="col-name">{label}</span>
-        <span className="col-count">{String(tasks.length).padStart(2, '0')}</span>
       </header>
       <div className="col-cards">
         {tasks.length === 0 ? (
@@ -1015,7 +996,7 @@ function QnaCard({
         <span className="qna-question">{item.question}</span>
         <span className="qna-meta">
           <span className="qna-author">{item.author}</span>
-          <span className="qna-count">{item.answers.length} {item.answers.length === 1 ? 'answer' : 'answers'}</span>
+          {item.answers.length > 0 && <span className="qna-answered">Answered</span>}
           <span className="qna-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
         </span>
       </button>
@@ -1143,7 +1124,6 @@ function PmNotes({
               <p className="pm-group-label">
                 <span className={`col-dot col-dot-${group.id}`} />
                 {group.label}
-                <span className="col-count">{String(group.items.length).padStart(2, '0')}</span>
               </p>
               {group.items.map((task) => {
                 const hasNote = Boolean(notes[String(task.id)]?.trim())
@@ -1397,7 +1377,7 @@ function CheckinEntry({
         </span>
         {isLatest && (
           <span className="checkin-latest-chip">
-            Last check-in{canEdit && pendingCount > 0 ? ` · ${pendingCount} to resolve` : ''}
+            Last check-in{canEdit && pendingCount > 0 ? ' · goals to resolve' : ''}
           </span>
         )}
         {canEdit && onSaveNotes && !editing && (
@@ -1753,9 +1733,7 @@ function ReviewStudents({
       <section className="panel">
         <div className="panel-head">
           <h3 className="panel-title">Sign-up requests</h3>
-          <span className="panel-note">
-            {pending.length === 0 ? 'nothing waiting' : `${pending.length} waiting`}
-          </span>
+          <span className="panel-note">approve or reject new sign-ins</span>
         </div>
         {pending.length === 0 ? (
           <p className="quiet-text">No one is waiting — new GitHub sign-ins land here for approval before they can enter the app.</p>
@@ -2494,7 +2472,6 @@ function App() {
                     key={team.slug}
                     label={team.name}
                     active={activeTab === team.slug}
-                    count={tasksFor(team.slug).length}
                     onClick={() => selectTab(team.slug)}
                     onRename={authUser.isAdmin ? (n) => void handleUpdateTeam(team.slug, { name: n }) : undefined}
                   />
@@ -2510,7 +2487,6 @@ function App() {
                   key={team.slug}
                   label={team.name}
                   active={activeTab === team.slug}
-                  count={tasksFor(team.slug).length}
                   onClick={() => selectTab(team.slug)}
                   onRename={authUser.isAdmin ? (n) => void handleUpdateTeam(team.slug, { name: n }) : undefined}
                 />
@@ -2541,7 +2517,7 @@ function App() {
                 label="Review students"
                 active={activeTab === 'review'}
                 onClick={() => selectTab('review')}
-                badge={pendingUsers.length > 0 ? String(pendingUsers.length) : undefined}
+                dot={pendingUsers.length > 0}
               />
             </>
           )}

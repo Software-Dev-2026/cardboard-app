@@ -107,10 +107,12 @@
   white-space: nowrap;
 }
 
-.nav-item-badge {
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  color: var(--muted);
+.nav-item-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
 }
 
 .nav-rename-icon {
@@ -291,10 +293,6 @@
 .profile-role-chip.role-pm {
   background: var(--green-soft);
   color: var(--green);
-}
-
-.stat-grid-3 {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .profile-task-list {
@@ -607,12 +605,6 @@
   letter-spacing: 0.12em;
   color: var(--ink-soft);
   flex: 1;
-}
-
-.col-count {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  color: var(--muted);
 }
 
 .col-cards {
@@ -1344,10 +1336,16 @@
   color: var(--ink-soft);
 }
 
-.qna-count {
+.qna-answered {
   font-family: var(--font-mono);
-  font-size: 0.66rem;
-  color: var(--muted);
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--green-soft);
+  color: var(--green);
 }
 
 .qna-chevron {
@@ -1521,10 +1519,6 @@
   letter-spacing: 0.12em;
   color: var(--muted);
   margin: 12px 8px 4px;
-}
-
-.pm-group-label .col-count {
-  margin-left: auto;
 }
 
 .pm-row {
