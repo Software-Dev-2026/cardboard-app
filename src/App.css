@@ -521,6 +521,65 @@
   margin: 0;
 }
 
+/* ── Skeletons ────────────────────────────────────────────────────────────── */
+/* Ghost blocks in the paper tone with a faint kraft shimmer. The sweep is an
+   ::after overlay, so reduced-motion leaves a clean static placeholder. */
+
+.skel {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-2);
+  border-radius: 5px;
+}
+
+.skel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 7%, transparent),
+    transparent
+  );
+  animation: skel-sweep 1.3s ease-in-out infinite;
+}
+
+@keyframes skel-sweep {
+  to { transform: translateX(100%); }
+}
+
+.skel-line {
+  display: block;
+  height: 11px;
+}
+
+.skel-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.skel-dot-sm {
+  width: 8px;
+  height: 8px;
+}
+
+.skel-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 5px 0;
+}
+
+.skel-card {
+  gap: 9px;
+  pointer-events: none;
+  box-shadow: none;
+}
+
 /* ── Task card ────────────────────────────────────────────────────────────── */
 
 .card {

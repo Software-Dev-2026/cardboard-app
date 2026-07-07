@@ -387,6 +387,53 @@ function PriorityPicker({ value, onChange, name, disabled = false }: { value: Pr
   )
 }
 
+// ── Skeletons ─────────────────────────────────────────────────────────────────
+// Ghost placeholders shown while a fetch is in flight, shaped like the content
+// they stand in for. The shimmer is killed by the global reduced-motion rule.
+
+function SkeletonLines({ rows = 3 }: { rows?: number }) {
+  const widths = ['74%', '58%', '83%', '62%', '77%', '51%']
+  return (
+    <div className="skel-lines" role="status" aria-label="Loading">
+      {Array.from({ length: rows }, (_, i) => (
+        <span key={i} className="skel skel-line" style={{ width: widths[i % widths.length] }} />
+      ))}
+    </div>
+  )
+}
+
+function SkeletonCard() {
+  return (
+    <div className="card skel-card">
+      <span className="skel skel-line" style={{ width: '34%', height: 9 }} />
+      <span className="skel skel-line" style={{ width: '76%' }} />
+      <span className="skel skel-line" style={{ width: '92%', height: 9 }} />
+      <div className="card-meta">
+        <span className="skel skel-dot" />
+        <span className="skel skel-line" style={{ width: '40%', height: 9 }} />
+      </div>
+    </div>
+  )
+}
+
+function SkeletonBoard() {
+  return (
+    <div className="board" role="status" aria-label="Loading board">
+      {CARD_STATUSES.map((s, col) => (
+        <section key={s.id} className="board-col">
+          <header className="col-head">
+            <span className="skel skel-dot skel-dot-sm" />
+            <span className="skel skel-line" style={{ width: 72, height: 9 }} />
+          </header>
+          <div className="col-cards">
+            {Array.from({ length: col === 0 ? 2 : 1 }, (_, i) => <SkeletonCard key={i} />)}
+          </div>
+        </section>
+      ))}
+    </div>
+  )
+}
+
 // ── Modal shell ───────────────────────────────────────────────────────────────
 
 function ModalShell({ onClose, wide, children }: { onClose: () => void; wide?: boolean; children: ReactNode }) {
@@ -427,7 +474,7 @@ function CardActivity({ cardId, refreshToken }: { cardId: Task['id']; refreshTok
     return () => { isActive = false }
   }, [cardId, refreshToken])
 
-  if (isLoading) return <p className="quiet-text">Loading activity…</p>
+  if (isLoading) return <SkeletonLines rows={3} />
   if (events.length === 0) return <p className="quiet-text">No activity yet.</p>
 
   return (
@@ -479,7 +526,7 @@ function CardComments({ cardId }: { cardId: Task['id'] }) {
   return (
     <div className="comments-block">
       {isLoading ? (
-        <p className="quiet-text">Loading comments…</p>
+        <SkeletonLines rows={2} />
       ) : comments.length === 0 ? (
         <p className="quiet-text">No comments yet — start the thread.</p>
       ) : (
@@ -1182,7 +1229,7 @@ function Dashboard({
       <section className="panel">
         <div className="panel-head"><h3 className="panel-title">Recent activity</h3></div>
         {isLoadingActivity ? (
-          <p className="quiet-text">Loading activity…</p>
+          <SkeletonLines rows={5} />
         ) : activity.length === 0 ? (
           <p className="quiet-text">No activity yet.</p>
         ) : (
@@ -1497,7 +1544,7 @@ function TeamCheckins({
             )}
             <CheckinComposer key={selected.id} subjectName={selected.displayName} onCreate={handleCreate} />
             {isLoading ? (
-              <p className="quiet-text">Loading check-ins…</p>
+              <div className="panel"><SkeletonLines rows={3} /></div>
             ) : entries.length === 0 ? (
               <p className="quiet-text">No check-ins for {selected.displayName} yet — the first one starts the record.</p>
             ) : (
@@ -1540,7 +1587,7 @@ function MyCheckins() {
   return (
     <div className="page checkin-mine">
       {isLoading ? (
-        <p className="quiet-text">Loading check-ins…</p>
+        <div className="panel"><SkeletonLines rows={4} /></div>
       ) : checkins.length === 0 ? (
         <p className="quiet-text">No check-ins yet — your PM will log notes and goals for you here after your next 1:1.</p>
       ) : (
@@ -1827,7 +1874,7 @@ function AdminPanel({
       </section>
 
       {isLoading ? (
-        <p className="quiet-text">Loading users…</p>
+        <div className="panel"><SkeletonLines rows={3} /></div>
       ) : (
         <div className="panel table-panel">
           <table className="admin-table">
@@ -2341,7 +2388,7 @@ function App() {
               )}
             </div>
           ) : isLoading ? (
-            <p className="quiet-text page">Loading cards…</p>
+            <SkeletonBoard />
           ) : (
             <div className="board">
               {CARD_STATUSES.map((s) => (
