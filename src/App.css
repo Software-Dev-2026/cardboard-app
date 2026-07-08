@@ -624,6 +624,59 @@
   margin: 0;
 }
 
+/* ── Finished tasks shelf ─────────────────────────────────────────────────── */
+/* A full-width board column under the grid; collapsed to just its header until
+   toggled open. */
+
+.finished-col {
+  margin-top: 16px;
+  min-height: 0;
+}
+
+.col-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  padding: 4px 6px;
+}
+
+.col-dot-finished {
+  background: var(--green);
+  opacity: 0.45;
+}
+
+.col-count {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.col-chevron {
+  color: var(--muted);
+  font-size: 0.72rem;
+  transition: transform 120ms ease;
+  transform: rotate(-90deg);
+}
+
+.col-chevron.expanded {
+  transform: none;
+}
+
+.finished-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: start;
+}
+
+.finished-cards .col-empty {
+  grid-column: 1 / -1;
+}
+
 /* ── Skeletons ────────────────────────────────────────────────────────────── */
 /* Ghost blocks in the paper tone with a faint kraft shimmer. The sweep is an
    ::after overlay, so reduced-motion leaves a clean static placeholder. */
@@ -939,6 +992,70 @@
   justify-content: flex-end;
   gap: 8px;
   padding-top: 6px;
+}
+
+/* Un-done confirmation (card dragged out of Done) — floats over the live
+   board with no dimming; the pop shadow and colored actions carry it. */
+
+/* No grey tint, but a stronger blur than the default backdrop — the page
+   going soft is what signals the pop-up. */
+.modal-backdrop-clear {
+  background: transparent;
+  backdrop-filter: blur(5px);
+}
+
+.modal-floating {
+  box-shadow: var(--shadow-pop);
+  border-color: var(--border-strong);
+}
+
+.undone-body {
+  padding: 12px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.undone-body p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+/* Traffic-light actions: red abandons, amber moves as-is, green also fixes the date. */
+
+.btn-undone-cancel {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--red) 40%, transparent);
+  color: var(--red);
+}
+
+.btn-undone-cancel:hover:not(:disabled) {
+  background: var(--red-soft);
+}
+
+.btn-undone-no {
+  background: var(--amber-soft);
+  border-color: color-mix(in srgb, var(--amber) 35%, transparent);
+  color: var(--amber);
+}
+
+.btn-undone-no:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--amber) 24%, transparent);
+}
+
+.btn-undone-yes {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+
+.btn-undone-yes:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--green) 85%, black);
+}
+
+/* Dark theme's green is light enough that white text washes out. */
+:root[data-theme='dark'] .btn-undone-yes {
+  color: #0f2418;
 }
 
 /* Card detail modal */
@@ -2184,6 +2301,10 @@
 }
 
 @media (max-width: 860px) {
+  .finished-cards {
+    grid-template-columns: 1fr;
+  }
+
   .app {
     flex-direction: column;
     height: auto;

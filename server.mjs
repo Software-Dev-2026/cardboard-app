@@ -549,6 +549,19 @@ async function ensureSchema() {
       add column if not exists priority text not null default 'medium' check (priority in ('low', 'medium', 'high'))
   `
 
+  // done_at records when a card entered Done — it drives the board's
+  // auto-archive into "Finished tasks". Cleared whenever a card leaves Done.
+  await sql`
+    alter table cardboard_cards
+      add column if not exists done_at timestamptz
+  `
+
+  // Cards already sitting in Done predate the column; their last update is the
+  // closest thing to "when it was finished".
+  await sql`
+    update cardboard_cards set done_at = updated_at where status = 'done' and done_at is null
+  `
+
   await sql`
     create table if not exists cardboard_card_events (
       id uuid primary key default gen_random_uuid(),
@@ -828,7 +841,7 @@ async function ensureSchema() {
 
 async function listCards() {
   return sql`
-    select id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index
+    select id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index, done_at
     from cardboard_cards
     where classroom_id = ${activeClassroom.id}
     order by order_index asc, created_at asc;
@@ -852,10 +865,11 @@ async function createCard(body, user) {
   const assigneeUserId = 'assigneeUserId' in body ? await resolveAssigneeUserId(body.assigneeUserId) : user.id
   const [assignee] = await sql`select display_name from cardboard_users where id = ${assigneeUserId} limit 1`
   const team = await resolveTeamSlug(body.team)
+  const status = normalizeStatus(body.cardStatus)
 
   const [created] = await sql`
     insert into cardboard_cards (
-      classroom_id, created_by_user_id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority, order_index
+      classroom_id, created_by_user_id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority, order_index, done_at
     )
     values (
       ${activeClassroom.id},
@@ -867,11 +881,12 @@ async function createCard(body, user) {
       ${normalizeDate(body.dueDate)},
       ${normalizeTags(body.tags)},
       ${team},
-      ${normalizeStatus(body.cardStatus)},
+      ${status},
       ${normalizePriority(body.priority)},
-      ${(await listCards()).length}
+      ${(await listCards()).length},
+      ${status === 'done' ? new Date() : null}
     )
-    returning id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index;
+    returning id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index, done_at;
   `
 
   return created
@@ -1036,19 +1051,15 @@ async function updateCard(id, body, user) {
   if (!title) throw new HttpError(400, 'Title is required.')
 
   const [before] = await sql`
-    select id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority
+    select id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, done_at
     from cardboard_cards
     where id = ${id} and classroom_id = ${activeClassroom.id}
     limit 1
   `
   if (!before) return null
 
-  // Editing (status, assignee, priority, dates, team moves) is limited to the
-  // card's assignee, a PM of its team, or an admin — everyone else is read-only.
-  const isAssignee = String(before.assignee_user_id ?? '') === String(user.id)
-  if (!user.isAdmin && !isAssignee && !pmTeamsOf(user).includes(before.team)) {
-    throw new HttpError(403, 'Only the assignee, the team PM, or an admin can edit a card.')
-  }
+  // Editing is open to any signed-in (approved) user — cards belong to the
+  // class, not a person. Deleting is still restricted (see deleteCard).
 
   const nextStatus = normalizeStatus(body.cardStatus)
   const nextPriority = normalizePriority(body.priority)
@@ -1063,6 +1074,9 @@ async function updateCard(id, body, user) {
   const nextTags = normalizeTags(body.tags)
   const nextTeam = await resolveTeamSlug(body.team, before.team)
   const nextDescription = normalizeText(body.description)
+  // Entering Done stamps done_at (kept as-is while it stays Done, so edits
+  // don't reset the Finished-tasks archive clock); leaving Done clears it.
+  const nextDoneAt = nextStatus === 'done' ? (before.done_at ?? new Date()) : null
 
   const events = []
   if (before.status !== nextStatus) events.push(['status_changed', 'status', before.status, nextStatus])
@@ -1087,10 +1101,11 @@ async function updateCard(id, body, user) {
           team = ${nextTeam},
           status = ${nextStatus},
           priority = ${nextPriority},
+          done_at = ${nextDoneAt},
           updated_at = now()
       where id = ${id}
         and classroom_id = ${activeClassroom.id}
-      returning id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index
+      returning id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index, done_at
     `,
     ...events.map(([eventType, field, oldValue, newValue]) => sql`
       insert into cardboard_card_events (card_id, classroom_id, actor_user_id, event_type, field, old_value, new_value)
@@ -1738,6 +1753,7 @@ function cardRowToPayload(row) {
     team: row.team,
     cardStatus: row.status === 'flowing' || row.status === 'done' ? row.status : 'started',
     priority: normalizePriority(row.priority),
+    doneAt: row.done_at ? new Date(row.done_at).toISOString() : null,
   }
 }
 

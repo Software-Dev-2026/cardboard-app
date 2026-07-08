@@ -128,7 +128,9 @@ function formatShortDate(date: string) {
   )
 }
 
-function getDueState(date: string): { label: string; tone: 'calm' | 'soon' | 'late' } {
+function getDueState(date: string, done = false): { label: string; tone: 'calm' | 'soon' | 'late' } {
+  // A done card is checked off — it can't be late no matter what the date says.
+  if (done) return { label: date ? formatShortDate(date) : 'No due date', tone: 'calm' }
   if (!date) return { label: 'No due date', tone: 'calm' }
   const due = new Date(`${date}T12:00:00`)
   const d = Math.ceil((due.getTime() - TODAY.getTime()) / 86400000)
@@ -139,6 +141,15 @@ function getDueState(date: string): { label: string; tone: 'calm' | 'soon' | 'la
 
 function initialOf(name: string): string {
   return (name.trim().slice(0, 1) || '?').toUpperCase()
+}
+
+const FINISHED_AFTER_DAYS = 7
+
+// A done card "finishes" after sitting in Done for a while: it leaves the Done
+// column for the collapsed Finished-tasks shelf under the board.
+function isFinishedTask(task: Task): boolean {
+  if (task.cardStatus !== 'done' || !task.doneAt) return false
+  return TODAY.getTime() - new Date(task.doneAt).getTime() >= FINISHED_AFTER_DAYS * 86400000
 }
 
 // ── Wordmark ──────────────────────────────────────────────────────────────────
@@ -499,7 +510,9 @@ function SkeletonBoard() {
 
 // ── Modal shell ───────────────────────────────────────────────────────────────
 
-function ModalShell({ onClose, wide, children }: { onClose: () => void; wide?: boolean; children: ReactNode }) {
+// floating: no backdrop dim/blur — the dialog floats over the live page and a
+// heavier shadow does the lifting. For small prompts where context matters.
+function ModalShell({ onClose, wide, floating, children }: { onClose: () => void; wide?: boolean; floating?: boolean; children: ReactNode }) {
   useEffect(() => {
     function onKey(e: globalThis.KeyboardEvent) {
       if (e.key === 'Escape') onClose()
@@ -509,8 +522,8 @@ function ModalShell({ onClose, wide, children }: { onClose: () => void; wide?: b
   }, [onClose])
 
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true">
+    <div className={`modal-backdrop ${floating ? 'modal-backdrop-clear' : ''}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className={`modal ${wide ? 'modal-wide' : ''} ${floating ? 'modal-floating' : ''}`} role="dialog" aria-modal="true">
         {children}
       </div>
     </div>
@@ -629,7 +642,7 @@ function TaskCard({
 }: {
   task: Task; index: number; canEdit: boolean; onOpen: (id: Task['id']) => void
 }) {
-  const dueState = getDueState(task.dueDate)
+  const dueState = getDueState(task.dueDate, task.cardStatus === 'done')
   const shownTags = visibleTags(task.tags)
 
   function handleDragStart(e: DragEvent<HTMLElement>) {
@@ -708,12 +721,86 @@ function BoardColumn({
   )
 }
 
+// ── FinishedTasksSection ──────────────────────────────────────────────────────
+// Collapsible shelf under the board, in the columns' visual language. Done
+// cards land here automatically after FINISHED_AFTER_DAYS days; it's not a
+// drop target — the archive clock is the only way in.
+
+function FinishedTasksSection({
+  tasks, canEditCard, onOpen,
+}: {
+  tasks: Task[]
+  canEditCard: (task: Task) => boolean
+  onOpen: (id: Task['id']) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <section className="board-col finished-col">
+      <button
+        type="button"
+        className="col-head col-toggle"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <span className="col-dot col-dot-finished" />
+        <span className="col-name">Finished tasks</span>
+        <span className="col-count">{tasks.length}</span>
+        <span className={`col-chevron ${expanded ? 'expanded' : ''}`} aria-hidden="true">▾</span>
+      </button>
+      {expanded && (
+        <div className="col-cards finished-cards">
+          {tasks.length === 0 ? (
+            <p className="col-empty">Nothing here yet — cards move over after {FINISHED_AFTER_DAYS} days in Done</p>
+          ) : (
+            tasks.map((task, i) => (
+              <TaskCard key={task.id} task={task} index={i} canEdit={canEditCard(task)} onOpen={onOpen} />
+            ))
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+// ── UndoneConfirmModal ────────────────────────────────────────────────────────
+// Shown when a card is moved out of Done: the move un-completes the card, and
+// the user may also want to push the due date out. Cancel abandons the move,
+// No moves it as-is, Yes moves it and opens the card with the date picker up.
+
+function UndoneConfirmModal({
+  task, toStatus, onChoose, onCancel,
+}: {
+  task: Task
+  toStatus: CardStatus
+  onChoose: (extendDueDate: boolean) => void
+  onCancel: () => void
+}) {
+  return (
+    <ModalShell onClose={onCancel} floating>
+      <header className="modal-head">
+        <span className="modal-eyebrow">Back to {statusLabel(toStatus)}</span>
+        <button type="button" className="icon-btn" onClick={onCancel} aria-label="Close">✕</button>
+      </header>
+      <div className="undone-body">
+        <p className="undone-text"><strong>“{task.title}”</strong> will be marked as not completed.</p>
+        <p className="quiet-text">Do you also want to extend its due date?</p>
+        <footer className="modal-actions">
+          <button type="button" className="btn btn-undone-cancel" onClick={onCancel}>Cancel</button>
+          <button type="button" className="btn btn-undone-no" onClick={() => onChoose(false)}>No, just move it</button>
+          <button type="button" className="btn btn-undone-yes" onClick={() => onChoose(true)}>Yes, pick a new date</button>
+        </footer>
+      </div>
+    </ModalShell>
+  )
+}
+
 // ── CardDetailModal ───────────────────────────────────────────────────────────
 // Property changes commit immediately (like any modern tracker); title and
 // description commit on blur so typing isn't a request per keystroke.
 
 function CardDetailModal({
-  task, roster, teams, teamNames, canEdit, canDelete, onUpdate, onDelete, onClose,
+  task, roster, teams, teamNames, canEdit, canDelete, autoFocusDueDate, onUpdate, onDelete, onClose,
 }: {
   task: Task
   roster: RosterUser[]
@@ -721,6 +808,7 @@ function CardDetailModal({
   teamNames: Record<TeamId, string>
   canEdit: boolean
   canDelete: boolean
+  autoFocusDueDate?: boolean
   onUpdate: (id: Task['id'], updated: Partial<Task>) => Promise<void>
   onDelete: (id: Task['id']) => Promise<boolean>
   onClose: () => void
@@ -730,6 +818,16 @@ function CardDetailModal({
   const [refreshToken, setRefreshToken] = useState(0)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const dueDateRef = useRef<HTMLInputElement>(null)
+
+  // Opened via the "extend the due date?" prompt — land the user in the picker.
+  useEffect(() => {
+    if (!autoFocusDueDate) return
+    const input = dueDateRef.current
+    if (!input) return
+    input.focus()
+    try { input.showPicker?.() } catch { /* some browsers require a fresh user gesture */ }
+  }, [autoFocusDueDate])
 
   async function handleDelete() {
     if (!confirmingDelete) { setConfirmingDelete(true); return }
@@ -792,9 +890,6 @@ function CardDetailModal({
           </section>
         </div>
         <aside className="card-modal-props">
-          {!canEdit && (
-            <p className="quiet-text">Read-only — only the assignee, the team PM, or an admin can edit this card.</p>
-          )}
           <div className="prop">
             <span className="prop-label">Status</span>
             <select value={task.cardStatus} disabled={!canEdit} onChange={(e) => commit({ cardStatus: e.target.value as CardStatus })}>
@@ -818,7 +913,7 @@ function CardDetailModal({
           </div>
           <div className="prop">
             <span className="prop-label">Due date</span>
-            <input type="date" value={task.dueDate} disabled={!canEdit} onChange={(e) => commit({ dueDate: e.target.value })} />
+            <input ref={dueDateRef} type="date" value={task.dueDate} disabled={!canEdit} onChange={(e) => commit({ dueDate: e.target.value })} />
           </div>
           <div className="prop">
             <span className="prop-label">Team</span>
@@ -1155,7 +1250,7 @@ function PmNotes({
               <div className="note-card-chips">
                 <span className={`status-chip status-${selectedTask.cardStatus}`}>{statusLabel(selectedTask.cardStatus)}</span>
                 <span className={`priority-badge priority-${selectedTask.priority}`}>{priorityLabel(selectedTask.priority)}</span>
-                <span className={`due-chip due-${getDueState(selectedTask.dueDate).tone}`}>{getDueState(selectedTask.dueDate).label}</span>
+                <span className={`due-chip due-${getDueState(selectedTask.dueDate, selectedTask.cardStatus === 'done').tone}`}>{getDueState(selectedTask.dueDate, selectedTask.cardStatus === 'done').label}</span>
                 {visibleTags(selectedTask.tags).map((tag) => (
                   <span key={tag} className={`tag-chip tag-${tag.toLowerCase().replace(' ', '-')} active static`}>{tag}</span>
                 ))}
@@ -2131,6 +2226,10 @@ function App() {
   const [checkinTeam, setCheckinTeam] = useState<TeamId>('')
   const [notesTeam, setNotesTeam] = useState<TeamId>('')
   const [selectedCardId, setSelectedCardId] = useState<Task['id'] | null>(null)
+  // A pending "move out of Done" awaiting the Yes/No/Cancel prompt, and the
+  // card whose detail modal should open straight onto the due-date picker.
+  const [undoneConfirm, setUndoneConfirm] = useState<{ taskId: Task['id']; toStatus: CardStatus } | null>(null)
+  const [dueDateFocusId, setDueDateFocusId] = useState<Task['id'] | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
 
   useEffect(() => {
@@ -2292,6 +2391,18 @@ function App() {
   async function handleUpdateTask(id: Task['id'], updated: Partial<Task>) {
     const current = tasks.find((t) => t.id === id)
     if (!current) return
+    // Leaving Done un-completes the card, so the move waits on the
+    // Yes/No/Cancel prompt instead of applying straight away.
+    if (updated.cardStatus && updated.cardStatus !== 'done' && current.cardStatus === 'done') {
+      setUndoneConfirm({ taskId: id, toStatus: updated.cardStatus })
+      return
+    }
+    await applyTaskUpdate(id, updated)
+  }
+
+  async function applyTaskUpdate(id: Task['id'], updated: Partial<Task>) {
+    const current = tasks.find((t) => t.id === id)
+    if (!current) return
     const merged = { ...current, ...updated }
 
     try {
@@ -2327,6 +2438,19 @@ function App() {
     const current = tasks.find((t) => String(t.id) === id)
     if (!current || current.cardStatus === status) return
     void handleUpdateTask(current.id, { cardStatus: status })
+  }
+
+  // Resolves the un-done prompt: apply the deferred move, and on "Yes" open the
+  // card with the due-date picker ready for a new date.
+  async function handleUndoneChoice(extendDueDate: boolean) {
+    if (!undoneConfirm) return
+    const { taskId, toStatus } = undoneConfirm
+    setUndoneConfirm(null)
+    await applyTaskUpdate(taskId, { cardStatus: toStatus })
+    if (extendDueDate) {
+      setDueDateFocusId(taskId)
+      setSelectedCardId(taskId)
+    }
   }
 
   async function handleCreateQuestion(question: string) {
@@ -2409,9 +2533,9 @@ function App() {
 
   const pmTeams = authUser.memberships.filter((m) => m.role === 'pm').map((m) => m.team)
   const isPm = pmTeams.length > 0
-  // Mirrors the server's rules: edits are for the assignee, the card's team PM,
-  // or an admin; deletion adds the creator (accountable — deletions are theirs).
-  const canEditTask = (t: Task) => authUser.isAdmin || pmTeams.includes(t.team) || t.assigneeUserId === authUser.id
+  // Mirrors the server's rules: any signed-in user can edit or move any card;
+  // deletion stays with the creator, the team PM, or an admin.
+  const canEditTask = () => true
   const canDeleteTask = (t: Task) => authUser.isAdmin || pmTeams.includes(t.team) || t.createdByUserId === authUser.id
   const canSeeDashboard = authUser.isAdmin || isPm
   const canManageCheckins = canSeeDashboard
@@ -2650,19 +2774,26 @@ function App() {
           ) : isLoading ? (
             <SkeletonBoard />
           ) : (
-            <div className="board">
-              {CARD_STATUSES.map((s) => (
-                <BoardColumn
-                  key={s.id}
-                  sectionId={s.id}
-                  label={s.label}
-                  tasks={activeTasks.filter((t) => t.cardStatus === s.id)}
-                  canEditCard={canEditTask}
-                  onOpen={setSelectedCardId}
-                  onDropCard={handleDropCard}
-                />
-              ))}
-            </div>
+            <>
+              <div className="board">
+                {CARD_STATUSES.map((s) => (
+                  <BoardColumn
+                    key={s.id}
+                    sectionId={s.id}
+                    label={s.label}
+                    tasks={activeTasks.filter((t) => t.cardStatus === s.id && !isFinishedTask(t))}
+                    canEditCard={canEditTask}
+                    onOpen={setSelectedCardId}
+                    onDropCard={handleDropCard}
+                  />
+                ))}
+              </div>
+              <FinishedTasksSection
+                tasks={activeTasks.filter(isFinishedTask)}
+                canEditCard={canEditTask}
+                onOpen={setSelectedCardId}
+              />
+            </>
           )}
           </div>
         </div>
@@ -2677,13 +2808,25 @@ function App() {
             ? visibleTeams
             : [...visibleTeams, ...teams.filter((t) => t.slug === selectedCard.team)]}
           teamNames={teamNames}
-          canEdit={canEditTask(selectedCard)}
+          canEdit={canEditTask()}
           canDelete={canDeleteTask(selectedCard)}
+          autoFocusDueDate={selectedCard.id === dueDateFocusId}
           onUpdate={handleUpdateTask}
           onDelete={handleDeleteTask}
-          onClose={() => setSelectedCardId(null)}
+          onClose={() => { setSelectedCardId(null); setDueDateFocusId(null) }}
         />
       )}
+      {undoneConfirm && (() => {
+        const pending = tasks.find((t) => t.id === undoneConfirm.taskId)
+        return pending ? (
+          <UndoneConfirmModal
+            task={pending}
+            toStatus={undoneConfirm.toStatus}
+            onChoose={(extend) => void handleUndoneChoice(extend)}
+            onCancel={() => setUndoneConfirm(null)}
+          />
+        ) : null
+      })()}
       {newCardOpen && isBoardView && (
         <NewCardModal
           defaultTeam={activeTab}

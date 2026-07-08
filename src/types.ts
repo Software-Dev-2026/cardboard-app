@@ -41,6 +41,9 @@ export interface Task {
   team: TeamId
   cardStatus: CardStatus
   priority: Priority
+  // When the card entered Done (ISO timestamp), or null while it isn't done.
+  // Server-derived from status changes; drives the Finished-tasks auto-archive.
+  doneAt: string | null
 }
 
 export interface QnaQuestion {
