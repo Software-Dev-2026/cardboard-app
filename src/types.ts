@@ -29,12 +29,19 @@ export interface Membership {
 export type CardStatus = 'started' | 'flowing' | 'done'
 export type Priority = 'low' | 'medium' | 'high'
 
+// One entry per person on a card; server-computed from the assignees table.
+export interface CardAssignee {
+  id: string
+  name: string
+}
+
 export interface Task {
   id: number | string
   title: string
   description: string
+  // Joined display names ("Ana, Ben" or "Unassigned"), kept for text-only spots.
   assignee: string
-  assigneeUserId: string | null
+  assignees: CardAssignee[]
   createdByUserId: string | null
   dueDate: string
   tags: string[]

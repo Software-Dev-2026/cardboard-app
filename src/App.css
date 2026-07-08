@@ -649,6 +649,15 @@
   opacity: 0.45;
 }
 
+/* Always-visible rule for what lands on the shelf, collapsed or not. */
+.col-hint {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
 .col-count {
   font-family: var(--font-mono);
   font-size: 0.68rem;
@@ -803,6 +812,69 @@
   flex: 1;
   font-size: 0.76rem;
   color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Overlapping avatars when a card has several assignees. */
+
+.avatar-stack {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.avatar-stack .avatar + .avatar {
+  margin-left: -6px;
+}
+
+.avatar-stack .avatar {
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+.avatar-more {
+  background: var(--gray-soft);
+  color: var(--ink-soft);
+}
+
+/* Assignee checklist in the card modals. */
+
+.assignee-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 4px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.assignee-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.assignee-option:hover {
+  background: var(--hover);
+}
+
+.assignee-option.selected {
+  background: var(--accent-soft);
+}
+
+.assignee-option input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.assignee-option-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1134,8 +1206,11 @@
   resize: none;
 }
 
+/* Only the visible controls dim when read-only. Scoped to the date input
+   because a bare `input:disabled` also outweighs the `.segment input` rule
+   that keeps the priority radios invisible (they'd bleed through at 0.55). */
 .card-modal-props select:disabled,
-.card-modal-props input:disabled {
+.card-modal-props input[type='date']:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }

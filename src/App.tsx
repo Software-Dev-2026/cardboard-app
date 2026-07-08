@@ -40,13 +40,17 @@ function getInitialTheme(): Theme {
   return 'light'
 }
 
+// Shape of an edit: any Task field, plus the assignee id list that the server
+// resolves back into the assignees/assignee fields.
+type TaskUpdate = Partial<Task> & { assigneeUserIds?: string[] }
+
 interface TaskDraft {
   title: string
   description: string
   dueDate: string
   presetTags: string[]
   team: TeamId
-  assigneeUserId: string | null
+  assigneeUserIds: string[]
   priority: Priority
 }
 
@@ -141,6 +145,10 @@ function getDueState(date: string, done = false): { label: string; tone: 'calm' 
 
 function initialOf(name: string): string {
   return (name.trim().slice(0, 1) || '?').toUpperCase()
+}
+
+function isAssignedTo(task: Task, userId: string | null): boolean {
+  return userId !== null && task.assignees.some((a) => a.id === userId)
 }
 
 const FINISHED_AFTER_DAYS = 7
@@ -338,7 +346,7 @@ function ProfileView({
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
   const [nameError, setNameError] = useState('')
 
-  const openMine = tasks.filter((t) => t.assigneeUserId === user.id && t.cardStatus !== 'done')
+  const openMine = tasks.filter((t) => isAssignedTo(t, user.id) && t.cardStatus !== 'done')
   const sortedOpen = [...openMine].sort((a, b) => (a.dueDate || '9999') <= (b.dueDate || '9999') ? -1 : 1)
 
   async function saveName() {
@@ -405,7 +413,7 @@ function ProfileView({
           <span className="panel-note">open cards across all boards</span>
         </div>
         {sortedOpen.length === 0 ? (
-          <p className="quiet-text">Nothing on your plate — pick up a card from a board or create one.</p>
+          <p className="quiet-text">Nothing on your plate. Pick up a card from a board or create one.</p>
         ) : (
           <ul className="profile-task-list">
             {sortedOpen.map((task) => {
@@ -443,6 +451,37 @@ function TagToggleRow({ selected, onChange, disabled = false }: { selected: stri
           onClick={() => toggle(tag)}>
           {tag}
         </button>
+      ))}
+    </div>
+  )
+}
+
+// Checkbox list so a card can carry several people. Visible checkboxes on
+// purpose; this replaced a single-choice dropdown.
+function AssigneePicker({ roster, selected, onChange, disabled = false }: {
+  roster: RosterUser[]
+  selected: string[]
+  onChange: (ids: string[]) => void
+  disabled?: boolean
+}) {
+  function toggle(id: string) {
+    onChange(selected.includes(id) ? selected.filter((s) => s !== id) : [...selected, id])
+  }
+
+  return (
+    <div className="assignee-picker">
+      {roster.length === 0 && <span className="quiet-text">No students yet</span>}
+      {roster.map((person) => (
+        <label key={person.id} className={`assignee-option ${selected.includes(person.id) ? 'selected' : ''}`}>
+          <input
+            type="checkbox"
+            checked={selected.includes(person.id)}
+            disabled={disabled}
+            onChange={() => toggle(person.id)}
+          />
+          <span className="avatar avatar-sm">{initialOf(person.displayName)}</span>
+          <span className="assignee-option-name">{person.displayName}</span>
+        </label>
       ))}
     </div>
   )
@@ -604,7 +643,7 @@ function CardComments({ cardId }: { cardId: Task['id'] }) {
       {isLoading ? (
         <SkeletonLines rows={2} />
       ) : comments.length === 0 ? (
-        <p className="quiet-text">No comments yet — start the thread.</p>
+        <p className="quiet-text">No comments yet. Start the thread.</p>
       ) : (
         <ul className="comment-list">
           {comments.map((comment) => (
@@ -670,7 +709,18 @@ function TaskCard({
       <h3 className="card-title">{task.title}</h3>
       {task.description && <p className="card-desc">{task.description}</p>}
       <div className="card-meta">
-        <span className="avatar avatar-sm" title={task.assignee}>{initialOf(task.assignee)}</span>
+        <span className="avatar-stack" title={task.assignee}>
+          {task.assignees.length === 0 ? (
+            <span className="avatar avatar-sm">{initialOf('Unassigned')}</span>
+          ) : (
+            task.assignees.slice(0, 3).map((a) => (
+              <span key={a.id} className="avatar avatar-sm">{initialOf(a.name)}</span>
+            ))
+          )}
+          {task.assignees.length > 3 && (
+            <span className="avatar avatar-sm avatar-more">+{task.assignees.length - 3}</span>
+          )}
+        </span>
         <span className="card-assignee">{task.assignee}</span>
         <span className={`due-chip due-${dueState.tone}`}>{dueState.label}</span>
       </div>
@@ -710,7 +760,7 @@ function BoardColumn({
       </header>
       <div className="col-cards">
         {tasks.length === 0 ? (
-          <p className="col-empty">No cards — drag one here</p>
+          <p className="col-empty">No cards yet. Drag one over.</p>
         ) : (
           tasks.map((task, i) => (
             <TaskCard key={task.id} task={task} index={i} canEdit={canEditCard(task)} onOpen={onOpen} />
@@ -745,13 +795,14 @@ function FinishedTasksSection({
       >
         <span className="col-dot col-dot-finished" />
         <span className="col-name">Finished tasks</span>
+        <span className="col-hint">Done for {FINISHED_AFTER_DAYS}+ days</span>
         <span className="col-count">{tasks.length}</span>
         <span className={`col-chevron ${expanded ? 'expanded' : ''}`} aria-hidden="true">▾</span>
       </button>
       {expanded && (
         <div className="col-cards finished-cards">
           {tasks.length === 0 ? (
-            <p className="col-empty">Nothing here yet — cards move over after {FINISHED_AFTER_DAYS} days in Done</p>
+            <p className="col-empty">Nothing here yet. Cards land here once they've been in Done for {FINISHED_AFTER_DAYS} days.</p>
           ) : (
             tasks.map((task, i) => (
               <TaskCard key={task.id} task={task} index={i} canEdit={canEditCard(task)} onOpen={onOpen} />
@@ -809,7 +860,7 @@ function CardDetailModal({
   canEdit: boolean
   canDelete: boolean
   autoFocusDueDate?: boolean
-  onUpdate: (id: Task['id'], updated: Partial<Task>) => Promise<void>
+  onUpdate: (id: Task['id'], updated: TaskUpdate) => Promise<void>
   onDelete: (id: Task['id']) => Promise<boolean>
   onClose: () => void
 }) {
@@ -838,7 +889,7 @@ function CardDetailModal({
     else setConfirmingDelete(false)
   }
 
-  function commit(updated: Partial<Task>) {
+  function commit(updated: TaskUpdate) {
     void onUpdate(task.id, updated).then(() => setRefreshToken((t) => t + 1))
   }
 
@@ -902,14 +953,9 @@ function CardDetailModal({
               onChange={(p) => commit({ priority: p })} />
           </div>
           <div className="prop">
-            <span className="prop-label">Assignee</span>
-            <select value={task.assigneeUserId ?? ''} disabled={!canEdit}
-              onChange={(e) => commit({ assigneeUserId: e.target.value || null })}>
-              <option value="">Unassigned</option>
-              {roster.map((person) => (
-                <option key={person.id} value={person.id}>{person.displayName}</option>
-              ))}
-            </select>
+            <span className="prop-label">Assignees</span>
+            <AssigneePicker roster={roster} selected={task.assignees.map((a) => a.id)} disabled={!canEdit}
+              onChange={(ids) => commit({ assigneeUserIds: ids })} />
           </div>
           <div className="prop">
             <span className="prop-label">Due date</span>
@@ -966,7 +1012,7 @@ function NewCardModal({
     dueDate: offsetDate(4),
     presetTags: [],
     team: defaultTeam,
-    assigneeUserId: defaultAssigneeId,
+    assigneeUserIds: defaultAssigneeId ? [defaultAssigneeId] : [],
     priority: 'medium',
   })
   const [isSaving, setIsSaving] = useState(false)
@@ -1007,14 +1053,9 @@ function NewCardModal({
         />
         <div className="new-card-props">
           <div className="prop">
-            <span className="prop-label">Assignee</span>
-            <select value={draft.assigneeUserId ?? ''}
-              onChange={(e) => update('assigneeUserId', e.target.value || null)}>
-              <option value="">Unassigned</option>
-              {roster.map((person) => (
-                <option key={person.id} value={person.id}>{person.displayName}</option>
-              ))}
-            </select>
+            <span className="prop-label">Assignees</span>
+            <AssigneePicker roster={roster} selected={draft.assigneeUserIds}
+              onChange={(ids) => update('assigneeUserIds', ids)} />
           </div>
           <div className="prop">
             <span className="prop-label">Due date</span>
@@ -1110,7 +1151,7 @@ function QnaCard({
               ))}
             </ul>
           ) : (
-            <p className="quiet-text">No answers yet — be the first.</p>
+            <p className="quiet-text">No answers yet. Be the first.</p>
           )}
           <div className="comment-composer">
             <textarea placeholder="Write an answer…" value={answerText} rows={2}
@@ -1335,9 +1376,10 @@ function Dashboard({
   const blockedCount = openTasks.filter((t) => t.tags.includes('Blocked')).length
   const needHelpCount = openTasks.filter((t) => t.tags.includes('Need Help')).length
 
+  // A card with several assignees counts toward each of their bars.
   const workload = openTasks.reduce<Record<string, number>>((acc, t) => {
-    const name = t.assignee || 'Unassigned'
-    acc[name] = (acc[name] ?? 0) + 1
+    const names = t.assignees.length ? t.assignees.map((a) => a.name) : ['Unassigned']
+    for (const name of names) acc[name] = (acc[name] ?? 0) + 1
     return acc
   }, {})
   const workloadEntries = Object.entries(workload).sort((a, b) => b[1] - a[1])
@@ -1615,7 +1657,7 @@ function TeamCheckins({
   }, [team])
 
   const entries = selected ? checkins.filter((c) => c.subjectUserId === selected.id) : []
-  const openCards = selected ? tasks.filter((t) => t.assigneeUserId === selected.id && t.cardStatus !== 'done') : []
+  const openCards = selected ? tasks.filter((t) => isAssignedTo(t, selected.id) && t.cardStatus !== 'done') : []
 
   function lastCheckinDate(studentId: string): string | null {
     const entry = checkins.find((c) => c.subjectUserId === studentId)
@@ -1660,7 +1702,7 @@ function TeamCheckins({
   }
 
   if (students.length === 0) {
-    return <p className="quiet-text page">No students on {teamName} yet — assign roles and teams from the Admin tab.</p>
+    return <p className="quiet-text page">No students on {teamName} yet. Assign roles and teams from the Admin tab.</p>
   }
 
   return (
@@ -1702,7 +1744,7 @@ function TeamCheckins({
             {isLoading ? (
               <div className="panel"><SkeletonLines rows={3} /></div>
             ) : entries.length === 0 ? (
-              <p className="quiet-text">No check-ins for {selected.displayName} yet — the first one starts the record.</p>
+              <p className="quiet-text">No check-ins for {selected.displayName} yet. The first one starts the record.</p>
             ) : (
               entries.map((entry, i) => (
                 <CheckinEntry
@@ -1745,7 +1787,7 @@ function MyCheckins() {
       {isLoading ? (
         <div className="panel"><SkeletonLines rows={4} /></div>
       ) : checkins.length === 0 ? (
-        <p className="quiet-text">No check-ins yet — your PM will log notes and goals for you here after your next 1:1.</p>
+        <p className="quiet-text">No check-ins yet. Your PM will log notes and goals for you here after your next 1:1.</p>
       ) : (
         checkins.map((entry, i) => (
           <CheckinEntry key={entry.id} entry={entry} isLatest={i === 0} canEdit={false} />
@@ -1794,7 +1836,7 @@ function PendingApprovalScreen({
           </span>
         </div>
         <p className="signin-copy">
-          You're signed in — a teacher just needs to approve this account before
+          You're signed in. A teacher just needs to approve this account before
           you can join the boards. Hang tight; this page opens on its own once
           you're in.
         </p>
@@ -1831,7 +1873,7 @@ function ReviewStudents({
           <span className="panel-note">approve or reject new sign-ins</span>
         </div>
         {pending.length === 0 ? (
-          <p className="quiet-text">No one is waiting — new GitHub sign-ins land here for approval before they can enter the app.</p>
+          <p className="quiet-text">No one is waiting. New GitHub sign-ins land here for approval before they can enter the app.</p>
         ) : (
           <ul className="pending-list">
             {pending.map((person) => (
@@ -1858,7 +1900,7 @@ function ReviewStudents({
                   Approve
                 </button>
                 <button type="button" className="btn btn-ghost btn-sm btn-reject" disabled={busyId === person.id}
-                  title="Removes the request — they can sign in again to re-request"
+                  title="Removes the request. They can sign in again to re-request."
                   onClick={() => void resolve(person.id, false)}>
                   Reject
                 </button>
@@ -2187,7 +2229,7 @@ function AdminPanel({
                       disabled={person.envAdmin}
                       title={
                         person.envAdmin
-                          ? 'Always an admin — set in the server config'
+                          ? 'Always an admin (set in the server config)'
                           : person.isAdmin ? 'Remove admin access' : 'Make this person an admin'
                       }
                       onClick={() => void handleAdminChange(person)}
@@ -2307,7 +2349,7 @@ function App() {
   const tasksFor = (slug: TeamId) => tasks.filter((t) => t.team === slug)
   const rawActiveTasks = tasksFor(activeTab)
   const activeTasks = myTasksOnly
-    ? rawActiveTasks.filter((t) => t.assigneeUserId === authUser?.id)
+    ? rawActiveTasks.filter((t) => isAssignedTo(t, authUser?.id ?? null))
     : rawActiveTasks
   const defaultName = authUser?.displayName ?? ''
 
@@ -2373,7 +2415,7 @@ function App() {
       const card = await createCard({
         title,
         description: draft.description.trim(),
-        assigneeUserId: draft.assigneeUserId,
+        assigneeUserIds: draft.assigneeUserIds,
         dueDate: draft.dueDate,
         tags: buildTags(draft.presetTags),
         team: draft.team,
@@ -2388,7 +2430,7 @@ function App() {
     }
   }
 
-  async function handleUpdateTask(id: Task['id'], updated: Partial<Task>) {
+  async function handleUpdateTask(id: Task['id'], updated: TaskUpdate) {
     const current = tasks.find((t) => t.id === id)
     if (!current) return
     // Leaving Done un-completes the card, so the move waits on the
@@ -2400,7 +2442,7 @@ function App() {
     await applyTaskUpdate(id, updated)
   }
 
-  async function applyTaskUpdate(id: Task['id'], updated: Partial<Task>) {
+  async function applyTaskUpdate(id: Task['id'], updated: TaskUpdate) {
     const current = tasks.find((t) => t.id === id)
     if (!current) return
     const merged = { ...current, ...updated }
@@ -2409,7 +2451,7 @@ function App() {
       const card = await updateCard(id, {
         title: merged.title,
         description: merged.description,
-        assigneeUserId: merged.assigneeUserId,
+        assigneeUserIds: updated.assigneeUserIds ?? current.assignees.map((a) => a.id),
         dueDate: merged.dueDate,
         tags: merged.tags,
         team: merged.team,
@@ -2511,7 +2553,7 @@ function App() {
             <p className="quiet-text">GitHub OAuth not configured</p>
           ) : (
             <>
-              <p className="signin-copy">Track your team's work — boards, priorities, and accountability for the class projects.</p>
+              <p className="signin-copy">Track your team's work: boards, priorities, and accountability for the class projects.</p>
               <a className="btn btn-primary signin-btn" href="/auth/github/start">Sign in with GitHub</a>
             </>
           )}
@@ -2762,7 +2804,7 @@ function App() {
             <div className="page qna-page">
               <QnaComposer onPost={handleCreateQuestion} defaultName={defaultName} />
               {qnaItems.length === 0 ? (
-                <p className="quiet-text">No questions yet — post the first one.</p>
+                <p className="quiet-text">No questions yet. Post the first one.</p>
               ) : (
                 <div className="qna-list">
                   {qnaItems.map((item) => (

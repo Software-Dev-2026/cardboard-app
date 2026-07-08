@@ -186,8 +186,13 @@ export async function fetchTeamActivity(team: TeamId): Promise<TeamActivityEvent
   return data.events
 }
 
-// doneAt is server-derived from status transitions, so writes never send it.
-export async function createCard(card: Omit<Task, 'id' | 'assignee' | 'createdByUserId' | 'doneAt'>): Promise<CardPayload> {
+// What the client sends on create/update: assignees travel as a list of user
+// ids; the server derives the display names, doneAt, and everything else.
+export type CardWrite = Omit<Task, 'id' | 'assignee' | 'assignees' | 'createdByUserId' | 'doneAt'> & {
+  assigneeUserIds: string[]
+}
+
+export async function createCard(card: CardWrite): Promise<CardPayload> {
   const data = await apiRequest<CardResponse>('/api/cards', {
     method: 'POST',
     body: JSON.stringify(card),
@@ -199,7 +204,7 @@ export async function deleteCard(id: Task['id']): Promise<void> {
   await apiRequest<OkResponse>(`/api/cards/${id}`, { method: 'DELETE' })
 }
 
-export async function updateCard(id: Task['id'], card: Omit<Task, 'id' | 'assignee' | 'createdByUserId' | 'doneAt'>): Promise<CardPayload> {
+export async function updateCard(id: Task['id'], card: CardWrite): Promise<CardPayload> {
   const data = await apiRequest<CardResponse>(`/api/cards/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(card),

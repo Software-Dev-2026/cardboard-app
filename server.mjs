@@ -562,6 +562,30 @@ async function ensureSchema() {
     update cardboard_cards set done_at = updated_at where status = 'done' and done_at is null
   `
 
+  // Cards can carry any number of assignees. The legacy assignee text column
+  // stays as the joined display names (Slack messages, PM notes read it);
+  // assignee_user_id is drained by the backfill below and no longer written.
+  await sql`
+    create table if not exists cardboard_card_assignees (
+      card_id uuid not null references cardboard_cards(id) on delete cascade,
+      user_id uuid not null references cardboard_users(id) on delete cascade,
+      created_at timestamptz not null default now(),
+      primary key (card_id, user_id)
+    )
+  `
+
+  await sql`
+    insert into cardboard_card_assignees (card_id, user_id)
+    select id, assignee_user_id from cardboard_cards where assignee_user_id is not null
+    on conflict do nothing
+  `
+
+  // Null the old column once migrated so this backfill can't resurrect an
+  // assignee someone has since removed.
+  await sql`
+    update cardboard_cards set assignee_user_id = null where assignee_user_id is not null
+  `
+
   await sql`
     create table if not exists cardboard_card_events (
       id uuid primary key default gen_random_uuid(),
@@ -839,45 +863,91 @@ async function ensureSchema() {
   return classroom
 }
 
+// Every card read pulls the assignee list in the same query as a json array,
+// so cardRowToPayload never needs a second lookup.
+const CARD_COLUMNS = `
+  c.id, c.title, c.description, c.assignee, c.created_by_user_id, c.due_date,
+  c.tags, c.team, c.status, c.priority, c.order_index, c.done_at
+`
+
 async function listCards() {
-  return sql`
-    select id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index, done_at
-    from cardboard_cards
-    where classroom_id = ${activeClassroom.id}
-    order by order_index asc, created_at asc;
-  `
+  return sql.query(`
+    select ${CARD_COLUMNS},
+      coalesce(
+        json_agg(json_build_object('id', u.id, 'name', u.display_name) order by u.display_name)
+          filter (where u.id is not null),
+        '[]'
+      ) as assignees
+    from cardboard_cards c
+    left join cardboard_card_assignees ca on ca.card_id = c.id
+    left join cardboard_users u on u.id = ca.user_id
+    where c.classroom_id = $1
+    group by c.id
+    order by c.order_index asc, c.created_at asc;
+  `, [activeClassroom.id])
 }
 
-// Resolves a client-supplied assignee id to a real cardboard_users.id, or null
-// (unassigned) if absent/invalid. Never trusts the id without checking it exists.
-async function resolveAssigneeUserId(candidateId) {
-  if (!candidateId) return null
-  const [match] = await sql`select id from cardboard_users where id = ${candidateId} limit 1`
-  return match ? match.id : null
+async function getCardRow(cardId) {
+  const [row] = await sql.query(`
+    select ${CARD_COLUMNS},
+      coalesce(
+        json_agg(json_build_object('id', u.id, 'name', u.display_name) order by u.display_name)
+          filter (where u.id is not null),
+        '[]'
+      ) as assignees
+    from cardboard_cards c
+    left join cardboard_card_assignees ca on ca.card_id = c.id
+    left join cardboard_users u on u.id = ca.user_id
+    where c.id = $1 and c.classroom_id = $2
+    group by c.id
+    limit 1
+  `, [cardId, activeClassroom.id])
+  return row ?? null
+}
+
+const UUID_PATTERN = /^[0-9a-f-]{36}$/i
+
+// Resolves client-supplied assignee ids to real cardboard_users rows, dropping
+// anything absent or invalid. Accepts the old single-id shape from stale
+// clients. Never trusts an id without checking it exists.
+async function resolveAssigneeUserIds(candidates) {
+  const list = (Array.isArray(candidates) ? candidates : [candidates])
+    .filter((id) => typeof id === 'string' && UUID_PATTERN.test(id))
+  if (!list.length) return []
+  const rows = await sql`
+    select id, display_name from cardboard_users
+    where id = any(${list}::uuid[])
+    order by display_name asc
+  `
+  return rows
+}
+
+function joinAssigneeNames(users) {
+  return users.length ? users.map((u) => u.display_name).join(', ') : 'Unassigned'
 }
 
 async function createCard(body, user) {
   const title = normalizeText(body.title)
   if (!title) throw new HttpError(400, 'Title is required.')
 
-  // The create form sends the picker's choice (a user id, or null for Unassigned);
-  // a request without the key at all still defaults to the creator.
-  const assigneeUserId = 'assigneeUserId' in body ? await resolveAssigneeUserId(body.assigneeUserId) : user.id
-  const [assignee] = await sql`select display_name from cardboard_users where id = ${assigneeUserId} limit 1`
+  // The create form sends the picker's choices (user ids, possibly empty);
+  // a request without either assignee key still defaults to the creator.
+  const assignees = 'assigneeUserIds' in body || 'assigneeUserId' in body
+    ? await resolveAssigneeUserIds(body.assigneeUserIds ?? body.assigneeUserId)
+    : await resolveAssigneeUserIds([user.id])
   const team = await resolveTeamSlug(body.team)
   const status = normalizeStatus(body.cardStatus)
 
   const [created] = await sql`
     insert into cardboard_cards (
-      classroom_id, created_by_user_id, title, description, assignee, assignee_user_id, due_date, tags, team, status, priority, order_index, done_at
+      classroom_id, created_by_user_id, title, description, assignee, due_date, tags, team, status, priority, order_index, done_at
     )
     values (
       ${activeClassroom.id},
       ${user.id},
       ${title},
       ${normalizeText(body.description)},
-      ${assignee?.display_name ?? 'Unassigned'},
-      ${assigneeUserId},
+      ${joinAssigneeNames(assignees)},
       ${normalizeDate(body.dueDate)},
       ${normalizeTags(body.tags)},
       ${team},
@@ -886,10 +956,16 @@ async function createCard(body, user) {
       ${(await listCards()).length},
       ${status === 'done' ? new Date() : null}
     )
-    returning id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index, done_at;
+    returning id;
   `
+  if (assignees.length) {
+    await sql`
+      insert into cardboard_card_assignees (card_id, user_id)
+      select ${created.id}, unnest(${assignees.map((a) => a.id)}::uuid[])
+    `
+  }
 
-  return created
+  return getCardRow(created.id)
 }
 
 async function listQuestions() {
@@ -1051,7 +1127,7 @@ async function updateCard(id, body, user) {
   if (!title) throw new HttpError(400, 'Title is required.')
 
   const [before] = await sql`
-    select id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, done_at
+    select id, title, description, assignee, created_by_user_id, due_date, tags, team, status, priority, done_at
     from cardboard_cards
     where id = ${id} and classroom_id = ${activeClassroom.id}
     limit 1
@@ -1063,13 +1139,11 @@ async function updateCard(id, body, user) {
 
   const nextStatus = normalizeStatus(body.cardStatus)
   const nextPriority = normalizePriority(body.priority)
-  // The edit form always sends the full assignee choice (a real id or null for
-  // "Unassigned") — no fallback to the previous value, unlike creation's default-to-creator.
-  const nextAssigneeUserId = await resolveAssigneeUserId(body.assigneeUserId)
-  const [assignee] = nextAssigneeUserId
-    ? await sql`select display_name from cardboard_users where id = ${nextAssigneeUserId} limit 1`
-    : [null]
-  const nextAssigneeName = assignee?.display_name ?? 'Unassigned'
+  // The edit form always sends the full assignee list (possibly empty for
+  // "Unassigned") — no fallback to the previous value, unlike creation's
+  // default-to-creator. Old clients may still send the single-id key.
+  const nextAssignees = await resolveAssigneeUserIds(body.assigneeUserIds ?? body.assigneeUserId)
+  const nextAssigneeName = joinAssigneeNames(nextAssignees)
   const nextDueDate = normalizeDate(body.dueDate)
   const nextTags = normalizeTags(body.tags)
   const nextTeam = await resolveTeamSlug(body.team, before.team)
@@ -1078,10 +1152,16 @@ async function updateCard(id, body, user) {
   // don't reset the Finished-tasks archive clock); leaving Done clears it.
   const nextDoneAt = nextStatus === 'done' ? (before.done_at ?? new Date()) : null
 
+  const beforeAssigneeRows = await sql`
+    select user_id from cardboard_card_assignees where card_id = ${id} order by user_id
+  `
+  const beforeAssigneeKey = beforeAssigneeRows.map((r) => r.user_id).join(',')
+  const nextAssigneeKey = nextAssignees.map((a) => a.id).sort().join(',')
+
   const events = []
   if (before.status !== nextStatus) events.push(['status_changed', 'status', before.status, nextStatus])
   if (before.priority !== nextPriority) events.push(['priority_changed', 'priority', before.priority, nextPriority])
-  if (String(before.assignee_user_id ?? '') !== String(nextAssigneeUserId ?? '')) {
+  if (beforeAssigneeKey !== nextAssigneeKey) {
     events.push(['assignee_changed', 'assignee', before.assignee, nextAssigneeName])
   }
   if (before.title !== title) events.push(['edited', 'title', before.title, title])
@@ -1095,7 +1175,6 @@ async function updateCard(id, body, user) {
       set title = ${title},
           description = ${nextDescription},
           assignee = ${nextAssigneeName},
-          assignee_user_id = ${nextAssigneeUserId},
           due_date = ${nextDueDate},
           tags = ${nextTags},
           team = ${nextTeam},
@@ -1105,17 +1184,23 @@ async function updateCard(id, body, user) {
           updated_at = now()
       where id = ${id}
         and classroom_id = ${activeClassroom.id}
-      returning id, title, description, assignee, assignee_user_id, created_by_user_id, due_date, tags, team, status, priority, order_index, done_at
+      returning id
     `,
+    sql`delete from cardboard_card_assignees where card_id = ${id}`,
+    ...(nextAssignees.length
+      ? [sql`
+          insert into cardboard_card_assignees (card_id, user_id)
+          select ${id}, unnest(${nextAssignees.map((a) => a.id)}::uuid[])
+        `]
+      : []),
     ...events.map(([eventType, field, oldValue, newValue]) => sql`
       insert into cardboard_card_events (card_id, classroom_id, actor_user_id, event_type, field, old_value, new_value)
       values (${id}, ${activeClassroom.id}, ${user.id}, ${eventType}, ${field}, ${String(oldValue ?? '')}, ${String(newValue ?? '')})
     `),
   ]
 
-  const results = await sql.transaction(queries)
-  const [updated] = results[0]
-  return updated ?? null
+  await sql.transaction(queries)
+  return getCardRow(id)
 }
 
 async function recordCardEvent(cardId, actorUserId, eventType, field, oldValue, newValue) {
@@ -1746,7 +1831,9 @@ function cardRowToPayload(row) {
     title: row.title,
     description: row.description ?? '',
     assignee: row.assignee ?? 'Unassigned',
-    assigneeUserId: row.assignee_user_id ?? null,
+    assignees: Array.isArray(row.assignees) ? row.assignees : [],
+    // Old clients still read the single-assignee key; give them the first one.
+    assigneeUserId: Array.isArray(row.assignees) && row.assignees[0] ? row.assignees[0].id : null,
     createdByUserId: row.created_by_user_id ?? null,
     dueDate: formatDate(row.due_date),
     tags: Array.isArray(row.tags) ? row.tags : [],
@@ -1778,7 +1865,11 @@ async function readJson(req) {
 }
 
 function sendJson(res, status, payload) {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+  // API responses must never be cached; a stale board is worse than a refetch.
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  })
   res.end(JSON.stringify(payload))
 }
 
@@ -1851,7 +1942,14 @@ function serveStatic(pathname, res) {
   const safePath = filePath.startsWith(dist) && existsSync(filePath) ? filePath : join(dist, 'index.html')
   const type = mimeType(extname(safePath))
 
-  res.writeHead(200, { 'content-type': type })
+  // Vite content-hashes everything under /assets, so those can cache forever;
+  // index.html (and the svgs) must revalidate on every load or students keep
+  // seeing the previous deploy until they hard-refresh.
+  const isHashedAsset = safePath.startsWith(join(dist, 'assets'))
+  res.writeHead(200, {
+    'content-type': type,
+    'cache-control': isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache',
+  })
   createReadStream(safePath).pipe(res)
 }
 
@@ -2006,7 +2104,7 @@ async function updateProject(slug, body) {
   const archived = 'archived' in body ? Boolean(body.archived) : existing.archived
   if (archived && !existing.archived) {
     if ((await countVisibleTeams({ excludeProjectSlug: slug })) < 1) {
-      throw new HttpError(400, 'At least one team must stay visible — add another project first.')
+      throw new HttpError(400, 'At least one team must stay visible. Add another project first.')
     }
   }
   const [updated] = await sql`
