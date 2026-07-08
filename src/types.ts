@@ -57,6 +57,8 @@ export interface QnaQuestion {
   id: string
   question: string
   author: string
+  // Null on rows from before author ids were stored; those are admin-delete only.
+  authorUserId: string | null
   answers: QnaAnswer[]
 }
 
@@ -64,6 +66,7 @@ export interface QnaAnswer {
   id: string
   text: string
   author: string
+  authorUserId: string | null
 }
 
 export interface CardEvent {

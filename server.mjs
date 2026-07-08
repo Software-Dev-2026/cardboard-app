@@ -256,6 +256,18 @@ async function handleApi(req, res, url) {
     return
   }
 
+  const cardCommentMatch = url.pathname.match(/^\/api\/cards\/([0-9a-f-]{36})\/comments\/([0-9a-f-]{36})$/i)
+  if (cardCommentMatch && req.method === 'DELETE') {
+    const user = await requireCurrentUser(req)
+    const deleted = await deleteCardComment(cardCommentMatch[1], cardCommentMatch[2], user)
+    if (!deleted) {
+      sendJson(res, 404, { error: 'Comment not found.' })
+      return
+    }
+    sendJson(res, 200, { ok: true })
+    return
+  }
+
   const cardMatch = url.pathname.match(/^\/api\/cards\/([0-9a-f-]{36})$/i)
   if (cardMatch && req.method === 'PATCH') {
     const user = await requireCurrentUser(req)
@@ -374,6 +386,17 @@ async function handleApi(req, res, url) {
     return
   }
 
+  if (checkinMatch && req.method === 'DELETE') {
+    const user = await requireCurrentUser(req)
+    const deleted = await deleteCheckin(checkinMatch[1], user)
+    if (!deleted) {
+      sendJson(res, 404, { error: 'Check-in not found.' })
+      return
+    }
+    sendJson(res, 200, { ok: true })
+    return
+  }
+
   const checkinGoalMatch = url.pathname.match(/^\/api\/checkin-goals\/([0-9a-f-]{36})$/i)
   if (checkinGoalMatch && req.method === 'PATCH') {
     const user = await requireCurrentUser(req)
@@ -384,6 +407,53 @@ async function handleApi(req, res, url) {
       return
     }
     sendJson(res, 200, { goal })
+    return
+  }
+
+  if (checkinGoalMatch && req.method === 'DELETE') {
+    const user = await requireCurrentUser(req)
+    const deleted = await deleteCheckinGoal(checkinGoalMatch[1], user)
+    if (!deleted) {
+      sendJson(res, 404, { error: 'Goal not found.' })
+      return
+    }
+    sendJson(res, 200, { ok: true })
+    return
+  }
+
+  const questionMatch = url.pathname.match(/^\/api\/questions\/([0-9a-f-]{36})$/i)
+  if (questionMatch && req.method === 'DELETE') {
+    const user = await requireCurrentUser(req)
+    const deleted = await deleteQuestion(questionMatch[1], user)
+    if (!deleted) {
+      sendJson(res, 404, { error: 'Question not found.' })
+      return
+    }
+    sendJson(res, 200, { ok: true })
+    return
+  }
+
+  const answerDeleteMatch = url.pathname.match(/^\/api\/answers\/([0-9a-f-]{36})$/i)
+  if (answerDeleteMatch && req.method === 'DELETE') {
+    const user = await requireCurrentUser(req)
+    const deleted = await deleteAnswer(answerDeleteMatch[1], user)
+    if (!deleted) {
+      sendJson(res, 404, { error: 'Answer not found.' })
+      return
+    }
+    sendJson(res, 200, { ok: true })
+    return
+  }
+
+  const userDeleteMatch = url.pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})$/i)
+  if (userDeleteMatch && req.method === 'DELETE') {
+    const admin = await requireAdmin(req)
+    const removed = await removeUser(userDeleteMatch[1], admin)
+    if (!removed) {
+      sendJson(res, 404, { error: 'User not found.' })
+      return
+    }
+    sendJson(res, 200, { ok: true })
     return
   }
 
@@ -747,6 +817,30 @@ async function ensureSchema() {
     )
   `
 
+  // Q&A rows used to store only the author's display name; the id makes
+  // author-only deletion enforceable. Rows from before the column stay
+  // null-authored, so only an admin can delete those.
+  await sql`
+    alter table cardboard_questions
+      add column if not exists author_user_id uuid references cardboard_users(id) on delete set null
+  `
+
+  await sql`
+    alter table cardboard_answers
+      add column if not exists author_user_id uuid references cardboard_users(id) on delete set null
+  `
+
+  // Both columns were created NOT NULL alongside ON DELETE SET NULL, which
+  // makes removing a user who ever commented or edited a card blow up on the
+  // constraint. Their authors are allowed to disappear.
+  await sql`
+    alter table cardboard_card_events alter column actor_user_id drop not null
+  `
+
+  await sql`
+    alter table cardboard_card_comments alter column author_user_id drop not null
+  `
+
   await sql`
     create index if not exists cardboard_cards_classroom_order_idx
       on cardboard_cards (classroom_id, order_index, created_at)
@@ -970,13 +1064,13 @@ async function createCard(body, user) {
 
 async function listQuestions() {
   const questionRows = await sql`
-    select id, question, author, created_at
+    select id, question, author, author_user_id, created_at
     from cardboard_questions
     where classroom_id = ${activeClassroom.id}
     order by created_at desc
   `
   const answerRows = await sql`
-    select a.id, a.question_id, a.text, a.author, a.created_at
+    select a.id, a.question_id, a.text, a.author, a.author_user_id, a.created_at
     from cardboard_answers a
     join cardboard_questions q on q.id = a.question_id
     where q.classroom_id = ${activeClassroom.id}
@@ -992,6 +1086,7 @@ async function listQuestions() {
           id: row.id,
           text: row.text,
           author: row.author,
+          authorUserId: row.author_user_id ?? null,
         },
       ],
     }
@@ -1001,6 +1096,7 @@ async function listQuestions() {
     id: row.id,
     question: row.question,
     author: row.author,
+    authorUserId: row.author_user_id ?? null,
     answers: answersByQuestion[row.id] ?? [],
   }))
 }
@@ -1010,15 +1106,16 @@ async function createQuestion(body, user) {
   if (!question) throw new HttpError(400, 'Question is required.')
 
   const [created] = await sql`
-    insert into cardboard_questions (classroom_id, question, author)
-    values (${activeClassroom.id}, ${question}, ${user.displayName})
-    returning id, question, author
+    insert into cardboard_questions (classroom_id, question, author, author_user_id)
+    values (${activeClassroom.id}, ${question}, ${user.displayName}, ${user.id})
+    returning id, question, author, author_user_id
   `
 
   return {
     id: created.id,
     question: created.question,
     author: created.author,
+    authorUserId: created.author_user_id,
     answers: [],
   }
 }
@@ -1037,15 +1134,16 @@ async function createAnswer(questionId, body, user) {
   if (!question) throw new HttpError(404, 'Question not found.')
 
   const [created] = await sql`
-    insert into cardboard_answers (question_id, text, author)
-    values (${questionId}, ${text}, ${user.displayName})
-    returning id, text, author
+    insert into cardboard_answers (question_id, text, author, author_user_id)
+    values (${questionId}, ${text}, ${user.displayName}, ${user.id})
+    returning id, text, author, author_user_id
   `
 
   return {
     id: created.id,
     text: created.text,
     author: created.author,
+    authorUserId: created.author_user_id,
   }
 }
 
@@ -1213,9 +1311,9 @@ async function recordCardEvent(cardId, actorUserId, eventType, field, oldValue, 
 async function listCardEvents(cardId) {
   const rows = await sql`
     select e.id, e.event_type, e.field, e.old_value, e.new_value, e.created_at,
-           u.display_name as actor_name, u.avatar_url as actor_avatar_url
+           coalesce(u.display_name, 'Former student') as actor_name, u.avatar_url as actor_avatar_url
     from cardboard_card_events e
-    join cardboard_users u on u.id = e.actor_user_id
+    left join cardboard_users u on u.id = e.actor_user_id
     where e.card_id = ${cardId}
     order by e.created_at asc
   `
@@ -1235,10 +1333,10 @@ async function listCardEvents(cardId) {
 async function listTeamActivity(team, limit = 25) {
   const rows = await sql`
     select e.id, e.event_type, e.field, e.old_value, e.new_value, e.created_at,
-           u.display_name as actor_name, u.avatar_url as actor_avatar_url,
+           coalesce(u.display_name, 'Former student') as actor_name, u.avatar_url as actor_avatar_url,
            c.id as card_id, c.title as card_title
     from cardboard_card_events e
-    join cardboard_users u on u.id = e.actor_user_id
+    left join cardboard_users u on u.id = e.actor_user_id
     join cardboard_cards c on c.id = e.card_id
     where c.classroom_id = ${activeClassroom.id} and c.team = ${team}
     order by e.created_at desc
@@ -1261,9 +1359,9 @@ async function listTeamActivity(team, limit = 25) {
 
 async function listCardComments(cardId) {
   const rows = await sql`
-    select c.id, c.body, c.created_at, u.id as author_id, u.display_name as author_name, u.avatar_url as author_avatar_url
+    select c.id, c.body, c.created_at, u.id as author_id, coalesce(u.display_name, 'Former student') as author_name, u.avatar_url as author_avatar_url
     from cardboard_card_comments c
-    join cardboard_users u on u.id = c.author_user_id
+    left join cardboard_users u on u.id = c.author_user_id
     where c.card_id = ${cardId}
     order by c.created_at asc
   `
@@ -1730,6 +1828,100 @@ async function createCheckin(body, user) {
     { ...created, subject_name: subject.display_name, author_name: user.displayName },
     goals,
   )
+}
+
+// A PM of the check-in's team (or an admin) can delete it — same audience
+// that creates and edits them, so a misclicked subject is recoverable.
+// Goals cascade with the row.
+async function deleteCheckin(checkinId, user) {
+  const row = await requireCheckinAccess(checkinId, user)
+  if (!row) return null
+  await sql`delete from cardboard_checkins where id = ${checkinId}`
+  return row
+}
+
+async function deleteCheckinGoal(goalId, user) {
+  const [goal] = await sql`
+    select g.id, c.team from cardboard_checkin_goals g
+    join cardboard_checkins c on c.id = g.checkin_id
+    where g.id = ${goalId} limit 1
+  `
+  if (!goal) return null
+  requireTeamPmOrAdmin(user, goal.team)
+  await sql`delete from cardboard_checkin_goals where id = ${goalId}`
+  return goal
+}
+
+// Comments follow the card-delete precedent: the author, a PM of the card's
+// team, or an admin. Replies cascade with the parent.
+async function deleteCardComment(cardId, commentId, user) {
+  const [comment] = await sql`
+    select cm.id, cm.author_user_id, c.team
+    from cardboard_card_comments cm
+    join cardboard_cards c on c.id = cm.card_id
+    where cm.id = ${commentId} and cm.card_id = ${cardId} and cm.classroom_id = ${activeClassroom.id}
+    limit 1
+  `
+  if (!comment) return null
+  const isAuthor = String(comment.author_user_id ?? '') === String(user.id)
+  if (!user.isAdmin && !isAuthor && !pmTeamsOf(user).includes(comment.team)) {
+    throw new HttpError(403, 'Only the comment author, the team PM, or an admin can delete a comment.')
+  }
+  await sql`delete from cardboard_card_comments where id = ${commentId}`
+  return comment
+}
+
+// Q&A deletions: the author or an admin. Questions from before author ids
+// were stored have a null author, so those fall to admins. Answers cascade
+// with their question.
+async function deleteQuestion(questionId, user) {
+  const [question] = await sql`
+    select id, author_user_id from cardboard_questions
+    where id = ${questionId} and classroom_id = ${activeClassroom.id}
+    limit 1
+  `
+  if (!question) return null
+  const isAuthor = String(question.author_user_id ?? '') === String(user.id)
+  if (!user.isAdmin && !isAuthor) {
+    throw new HttpError(403, 'Only the question author or an admin can delete a question.')
+  }
+  await sql`delete from cardboard_questions where id = ${questionId}`
+  return question
+}
+
+async function deleteAnswer(answerId, user) {
+  const [answer] = await sql`
+    select a.id, a.author_user_id from cardboard_answers a
+    join cardboard_questions q on q.id = a.question_id
+    where a.id = ${answerId} and q.classroom_id = ${activeClassroom.id}
+    limit 1
+  `
+  if (!answer) return null
+  const isAuthor = String(answer.author_user_id ?? '') === String(user.id)
+  if (!user.isAdmin && !isAuthor) {
+    throw new HttpError(403, 'Only the answer author or an admin can delete an answer.')
+  }
+  await sql`delete from cardboard_answers where id = ${answerId}`
+  return answer
+}
+
+// Removes an approved account (a student who dropped the class, a duplicate
+// sign-in). Sessions, memberships, card assignments, and check-ins about them
+// cascade away; their comments and card activity stay behind as
+// "Former student". Env-config admins and your own account are off limits.
+async function removeUser(userId, actingUser) {
+  if (String(userId) === String(actingUser.id)) {
+    throw new HttpError(400, "You can't remove your own account.")
+  }
+  const [target] = await sql`
+    select id, github_login from cardboard_users where id = ${userId} limit 1
+  `
+  if (!target) return null
+  if (isAdminLogin(target.github_login)) {
+    throw new HttpError(403, 'This account is an admin in the server config and cannot be removed.')
+  }
+  await sql`delete from cardboard_users where id = ${userId}`
+  return target
 }
 
 async function requireCheckinAccess(checkinId, user) {

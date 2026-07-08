@@ -115,6 +115,14 @@ export async function createAnswer(questionId: string, text: string): Promise<Qn
   return data.answer
 }
 
+export async function deleteQuestion(questionId: string): Promise<void> {
+  await apiRequest<OkResponse>(`/api/questions/${questionId}`, { method: 'DELETE' })
+}
+
+export async function deleteAnswer(answerId: string): Promise<void> {
+  await apiRequest<OkResponse>(`/api/answers/${answerId}`, { method: 'DELETE' })
+}
+
 export async function fetchPmNotes(team: TeamId): Promise<PmNotesPayload> {
   return apiRequest<PmNotesPayload>(`/api/pm-notes?team=${encodeURIComponent(team)}`)
 }
@@ -155,6 +163,10 @@ export async function resolveSignup(userId: string, approve: boolean): Promise<v
   })
 }
 
+export async function removeUser(userId: string): Promise<void> {
+  await apiRequest<OkResponse>(`/api/admin/users/${userId}`, { method: 'DELETE' })
+}
+
 export async function setUserAdmin(userId: string, isAdmin: boolean): Promise<RosterUser> {
   const data = await apiRequest<UserResponse>(`/api/admin/users/${userId}/admin`, {
     method: 'PATCH',
@@ -179,6 +191,10 @@ export async function createCardComment(cardId: Task['id'], body: string): Promi
     body: JSON.stringify({ body }),
   })
   return data.comment
+}
+
+export async function deleteCardComment(cardId: Task['id'], commentId: string): Promise<void> {
+  await apiRequest<OkResponse>(`/api/cards/${cardId}/comments/${commentId}`, { method: 'DELETE' })
 }
 
 export async function fetchTeamActivity(team: TeamId): Promise<TeamActivityEvent[]> {
@@ -297,6 +313,14 @@ export async function updateCheckinNotes(checkinId: string, notes: string): Prom
     body: JSON.stringify({ notes }),
   })
   return data.checkin
+}
+
+export async function deleteCheckin(checkinId: string): Promise<void> {
+  await apiRequest<OkResponse>(`/api/checkins/${checkinId}`, { method: 'DELETE' })
+}
+
+export async function deleteCheckinGoal(goalId: string): Promise<void> {
+  await apiRequest<OkResponse>(`/api/checkin-goals/${goalId}`, { method: 'DELETE' })
 }
 
 export async function updateCheckinGoalStatus(goalId: string, status: GoalStatus): Promise<CheckinGoal> {

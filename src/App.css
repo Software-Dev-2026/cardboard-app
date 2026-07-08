@@ -1383,6 +1383,23 @@
   color: var(--muted);
 }
 
+/* Quiet text button on comments/answers; turns red once it's asking "sure?". */
+.comment-delete {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--muted);
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.comment-delete:hover,
+.comment-delete.confirming {
+  color: var(--red);
+}
+
 .comment-text {
   font-size: 0.84rem;
   margin: 0;
@@ -1938,6 +1955,26 @@
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface-2);
+}
+
+.goal-remove {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.goal-remove:hover {
+  color: var(--red);
+}
+
+.qna-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.qna-foot .posting-as {
+  margin: 0;
 }
 
 .goal-text {

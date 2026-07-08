@@ -3,9 +3,10 @@ import type { DragEvent, FormEvent, KeyboardEvent, MouseEvent, ReactNode } from 
 import './App.css'
 import {
   createAnswer, createCard, createCardComment, createCheckin, createProject, createQuestion, createTeam,
-  deleteCard, fetchAdminUsers, fetchCardComments, fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins,
+  deleteAnswer, deleteCard, deleteCardComment, deleteCheckin, deleteCheckinGoal, deleteQuestion,
+  fetchAdminUsers, fetchCardComments, fetchCardEvents, fetchCards, fetchMe, fetchMyCheckins,
   fetchPendingUsers, fetchPmNotes, fetchQuestions, fetchRoster, fetchTeamActivity, fetchTeamCheckins, fetchTeams,
-  logout, resolveSignup, savePmNotes, setUserAdmin, updateCard, updateCheckinGoalStatus, updateCheckinNotes,
+  logout, removeUser, resolveSignup, savePmNotes, setUserAdmin, updateCard, updateCheckinGoalStatus, updateCheckinNotes,
   updateDefaultName, updateProject, updateTeam, updateUserMemberships,
 } from './utils/api'
 import type { AuthUser } from './utils/api'
@@ -606,11 +607,24 @@ function CardActivity({ cardId, refreshToken }: { cardId: Task['id']; refreshTok
 
 // ── CardComments ──────────────────────────────────────────────────────────────
 
-function CardComments({ cardId }: { cardId: Task['id'] }) {
+function CardComments({ cardId, currentUserId, canModerate }: {
+  cardId: Task['id']
+  currentUserId: string
+  // Team PMs and admins can remove anyone's comment; authors their own.
+  canModerate: boolean
+}) {
   const [comments, setComments] = useState<CardComment[]>([])
   const [draftText, setDraftText] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null)
+
+  function handleDeleteComment(commentId: string) {
+    if (confirmingDeleteId !== commentId) { setConfirmingDeleteId(commentId); return }
+    setConfirmingDeleteId(null)
+    void deleteCardComment(cardId, commentId)
+      .then(() => setComments((cur) => cur.filter((c) => c.id !== commentId)))
+  }
 
   useEffect(() => {
     let isActive = true
@@ -655,6 +669,16 @@ function CardComments({ cardId }: { cardId: Task['id'] }) {
                 <p className="comment-meta">
                   <span className="comment-author">{comment.authorName}</span>
                   <span className="comment-time">{formatRelativeTime(comment.createdAt)}</span>
+                  {(canModerate || comment.authorId === currentUserId) && (
+                    <button
+                      type="button"
+                      className={`comment-delete ${confirmingDeleteId === comment.id ? 'confirming' : ''}`}
+                      onClick={() => handleDeleteComment(comment.id)}
+                      onBlur={() => setConfirmingDeleteId(null)}
+                    >
+                      {confirmingDeleteId === comment.id ? 'Really delete?' : 'Delete'}
+                    </button>
+                  )}
                 </p>
                 <p className="comment-text">{comment.body}</p>
               </div>
@@ -851,7 +875,7 @@ function UndoneConfirmModal({
 // description commit on blur so typing isn't a request per keystroke.
 
 function CardDetailModal({
-  task, roster, teams, teamNames, canEdit, canDelete, autoFocusDueDate, onUpdate, onDelete, onClose,
+  task, roster, teams, teamNames, canEdit, canDelete, currentUserId, canModerateComments, autoFocusDueDate, onUpdate, onDelete, onClose,
 }: {
   task: Task
   roster: RosterUser[]
@@ -859,6 +883,8 @@ function CardDetailModal({
   teamNames: Record<TeamId, string>
   canEdit: boolean
   canDelete: boolean
+  currentUserId: string
+  canModerateComments: boolean
   autoFocusDueDate?: boolean
   onUpdate: (id: Task['id'], updated: TaskUpdate) => Promise<void>
   onDelete: (id: Task['id']) => Promise<boolean>
@@ -933,7 +959,7 @@ function CardDetailModal({
           />
           <section className="detail-section">
             <h4 className="section-label">Comments</h4>
-            <CardComments cardId={task.id} />
+            <CardComments cardId={task.id} currentUserId={currentUserId} canModerate={canModerateComments} />
           </section>
           <section className="detail-section">
             <h4 className="section-label">Activity</h4>
@@ -1111,18 +1137,29 @@ function QnaComposer({ onPost, defaultName }: { onPost: (question: string) => Pr
 }
 
 function QnaCard({
-  item, onAddAnswer, defaultName,
+  item, onAddAnswer, onDeleteQuestion, onDeleteAnswer, defaultName, currentUserId, isAdmin,
 }: {
   item: QnaQuestion
   onAddAnswer: (id: string, text: string) => Promise<void>
+  onDeleteQuestion: (id: string) => void
+  onDeleteAnswer: (questionId: string, answerId: string) => void
   defaultName: string
+  currentUserId: string
+  isAdmin: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const [answerText, setAnswerText] = useState('')
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const canDeleteQuestion = isAdmin || item.authorUserId === currentUserId
 
   function submitAnswer() {
     const text = answerText.trim(); if (!text) return
     void onAddAnswer(item.id, text).then(() => setAnswerText(''))
+  }
+
+  function handleDeleteQuestion() {
+    if (!confirmingDelete) { setConfirmingDelete(true); return }
+    onDeleteQuestion(item.id)
   }
 
   return (
@@ -1144,7 +1181,15 @@ function QnaCard({
                 <li key={ans.id} className="comment-item">
                   <span className="avatar">{initialOf(ans.author)}</span>
                   <div className="comment-body">
-                    <p className="comment-meta"><span className="comment-author">{ans.author}</span></p>
+                    <p className="comment-meta">
+                      <span className="comment-author">{ans.author}</span>
+                      {(isAdmin || ans.authorUserId === currentUserId) && (
+                        <button type="button" className="comment-delete"
+                          onClick={() => onDeleteAnswer(item.id, ans.id)}>
+                          Delete
+                        </button>
+                      )}
+                    </p>
                     <p className="comment-text">{ans.text}</p>
                   </div>
                 </li>
@@ -1160,7 +1205,19 @@ function QnaCard({
               Answer
             </button>
           </div>
-          <p className="posting-as">Posting as {defaultName}</p>
+          <div className="qna-foot">
+            <p className="posting-as">Posting as {defaultName}</p>
+            {canDeleteQuestion && (
+              <button
+                type="button"
+                className={`btn btn-sm ${confirmingDelete ? 'btn-danger' : 'btn-ghost'}`}
+                onClick={handleDeleteQuestion}
+                onBlur={() => setConfirmingDelete(false)}
+              >
+                {confirmingDelete ? 'Really delete? Answers go too' : 'Delete question'}
+              </button>
+            )}
+          </div>
         </div>
       )}
     </article>
@@ -1457,11 +1514,12 @@ const GOAL_STATUSES: Array<{ id: GoalStatus; label: string }> = [
 ]
 
 function GoalRow({
-  goal, canEdit, onSetStatus,
+  goal, canEdit, onSetStatus, onRemove,
 }: {
   goal: { id: string; text: string; status: GoalStatus }
   canEdit: boolean
   onSetStatus?: (goalId: string, status: GoalStatus) => void
+  onRemove?: (goalId: string) => void
 }) {
   return (
     <li className={`goal-row goal-${goal.status}`}>
@@ -1481,12 +1539,16 @@ function GoalRow({
           {GOAL_STATUSES.find((s) => s.id === goal.status)?.label}
         </span>
       )}
+      {canEdit && onRemove && (
+        <button type="button" className="icon-btn goal-remove" title="Remove goal"
+          onClick={() => onRemove(goal.id)}>✕</button>
+      )}
     </li>
   )
 }
 
 function CheckinEntry({
-  entry, isLatest, canEdit, showSubject, onSetGoalStatus, onSaveNotes,
+  entry, isLatest, canEdit, showSubject, onSetGoalStatus, onSaveNotes, onDelete, onRemoveGoal,
 }: {
   entry: Checkin
   isLatest: boolean
@@ -1494,15 +1556,27 @@ function CheckinEntry({
   showSubject?: boolean
   onSetGoalStatus?: (goalId: string, status: GoalStatus) => void
   onSaveNotes?: (checkinId: string, notes: string) => Promise<boolean>
+  onDelete?: (checkinId: string) => Promise<boolean>
+  onRemoveGoal?: (goalId: string) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [notesDraft, setNotesDraft] = useState(entry.notes)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
   const pendingCount = entry.goals.filter((g) => g.status === 'pending').length
 
   async function saveNotes() {
     if (!onSaveNotes) return
     const ok = await onSaveNotes(entry.id, notesDraft.trim())
     if (ok) setEditing(false)
+  }
+
+  async function handleDelete() {
+    if (!onDelete) return
+    if (!confirmingDelete) { setConfirmingDelete(true); return }
+    setIsDeleting(true)
+    const ok = await onDelete(entry.id)
+    if (!ok) { setIsDeleting(false); setConfirmingDelete(false) }
   }
 
   return (
@@ -1522,6 +1596,17 @@ function CheckinEntry({
             Edit
           </button>
         )}
+        {canEdit && onDelete && (
+          <button
+            type="button"
+            className={`btn btn-sm ${confirmingDelete ? 'btn-danger' : 'btn-ghost'}`}
+            onClick={() => void handleDelete()}
+            onBlur={() => setConfirmingDelete(false)}
+            disabled={isDeleting}
+          >
+            {isDeleting ? 'Deleting…' : confirmingDelete ? 'Really delete?' : 'Delete'}
+          </button>
+        )}
       </header>
       {editing ? (
         <div className="checkin-notes-edit">
@@ -1539,7 +1624,7 @@ function CheckinEntry({
           <p className="prop-label">Goals for next check-in</p>
           <ul className="goal-list">
             {entry.goals.map((goal) => (
-              <GoalRow key={goal.id} goal={goal} canEdit={canEdit} onSetStatus={onSetGoalStatus} />
+              <GoalRow key={goal.id} goal={goal} canEdit={canEdit} onSetStatus={onSetGoalStatus} onRemove={onRemoveGoal} />
             ))}
           </ul>
         </div>
@@ -1689,6 +1774,27 @@ function TeamCheckins({
       .catch((err) => setError(err instanceof Error ? err.message : 'Could not update goal.'))
   }
 
+  async function handleDelete(checkinId: string): Promise<boolean> {
+    setError('')
+    try {
+      await deleteCheckin(checkinId)
+      setCheckins((cur) => cur.filter((c) => c.id !== checkinId))
+      return true
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete check-in.')
+      return false
+    }
+  }
+
+  function handleRemoveGoal(goalId: string) {
+    setError('')
+    void deleteCheckinGoal(goalId)
+      .then(() => {
+        setCheckins((cur) => cur.map((c) => ({ ...c, goals: c.goals.filter((g) => g.id !== goalId) })))
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : 'Could not remove goal.'))
+  }
+
   async function handleSaveNotes(checkinId: string, notes: string): Promise<boolean> {
     setError('')
     try {
@@ -1754,6 +1860,8 @@ function TeamCheckins({
                   canEdit
                   onSetGoalStatus={handleSetGoalStatus}
                   onSaveNotes={handleSaveNotes}
+                  onDelete={handleDelete}
+                  onRemoveGoal={handleRemoveGoal}
                 />
               ))
             )}
@@ -2086,10 +2194,11 @@ function MembershipsEditor({
 }
 
 function AdminPanel({
-  teams, projects, onCreateTeam, onUpdateTeam, onCreateProject, onUpdateProject,
+  teams, projects, currentUserId, onCreateTeam, onUpdateTeam, onCreateProject, onUpdateProject,
 }: {
   teams: Team[]
   projects: Project[]
+  currentUserId: string
   onCreateTeam: (name: string, projectSlug: string) => Promise<void>
   onUpdateTeam: (slug: string, patch: { name?: string; archived?: boolean; projectSlug?: string }) => Promise<void>
   onCreateProject: (name: string) => Promise<void>
@@ -2138,6 +2247,20 @@ function AdminPanel({
       setUsers((cur) => cur.map((u) => (u.id === person.id ? updated : u)))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not update admin access.')
+    }
+  }
+
+  const [confirmingRemoveId, setConfirmingRemoveId] = useState<string | null>(null)
+
+  async function handleRemoveUser(person: RosterUser) {
+    if (confirmingRemoveId !== person.id) { setConfirmingRemoveId(person.id); return }
+    setConfirmingRemoveId(null)
+    setError('')
+    try {
+      await removeUser(person.id)
+      setUsers((cur) => cur.filter((u) => u.id !== person.id))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove this account.')
     }
   }
 
@@ -2203,7 +2326,7 @@ function AdminPanel({
         <div className="panel table-panel">
           <table className="admin-table">
             <thead>
-              <tr><th>Name</th><th>GitHub</th><th>Teams &amp; roles</th><th>Admin</th></tr>
+              <tr><th>Name</th><th>GitHub</th><th>Teams &amp; roles</th><th>Admin</th><th aria-label="Remove" /></tr>
             </thead>
             <tbody>
               {users.map((person) => (
@@ -2236,6 +2359,19 @@ function AdminPanel({
                     >
                       {person.isAdmin ? 'Admin' : 'Student'}
                     </button>
+                  </td>
+                  <td>
+                    {person.id !== currentUserId && !person.envAdmin && (
+                      <button
+                        type="button"
+                        className={`btn btn-sm ${confirmingRemoveId === person.id ? 'btn-danger' : 'btn-ghost'}`}
+                        title="Removes the account, its sessions, team roles, card assignments, and check-ins about them. They can sign in again as a new request."
+                        onClick={() => void handleRemoveUser(person)}
+                        onBlur={() => setConfirmingRemoveId(null)}
+                      >
+                        {confirmingRemoveId === person.id ? 'Really remove?' : 'Remove'}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -2511,6 +2647,22 @@ function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not post answer.')
     }
+  }
+
+  function handleDeleteQuestion(questionId: string) {
+    setError('')
+    void deleteQuestion(questionId)
+      .then(() => setQnaItems((cur) => cur.filter((q) => q.id !== questionId)))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Could not delete question.'))
+  }
+
+  function handleDeleteAnswer(questionId: string, answerId: string) {
+    setError('')
+    void deleteAnswer(answerId)
+      .then(() => setQnaItems((cur) => cur.map((q) => (
+        q.id === questionId ? { ...q, answers: q.answers.filter((a) => a.id !== answerId) } : q
+      ))))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Could not delete answer.'))
   }
 
   async function handleLogout() {
@@ -2795,6 +2947,7 @@ function App() {
             <AdminPanel
               teams={teams}
               projects={projects}
+              currentUserId={authUser.id}
               onCreateTeam={handleCreateTeam}
               onUpdateTeam={handleUpdateTeam}
               onCreateProject={handleCreateProject}
@@ -2808,7 +2961,9 @@ function App() {
               ) : (
                 <div className="qna-list">
                   {qnaItems.map((item) => (
-                    <QnaCard key={item.id} item={item} defaultName={defaultName} onAddAnswer={handleCreateAnswer} />
+                    <QnaCard key={item.id} item={item} defaultName={defaultName} onAddAnswer={handleCreateAnswer}
+                      onDeleteQuestion={handleDeleteQuestion} onDeleteAnswer={handleDeleteAnswer}
+                      currentUserId={authUser.id} isAdmin={authUser.isAdmin} />
                   ))}
                 </div>
               )}
@@ -2852,6 +3007,8 @@ function App() {
           teamNames={teamNames}
           canEdit={canEditTask()}
           canDelete={canDeleteTask(selectedCard)}
+          currentUserId={authUser.id}
+          canModerateComments={authUser.isAdmin || pmTeams.includes(selectedCard.team)}
           autoFocusDueDate={selectedCard.id === dueDateFocusId}
           onUpdate={handleUpdateTask}
           onDelete={handleDeleteTask}
