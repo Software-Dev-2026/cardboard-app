@@ -3,39 +3,39 @@
   --font-display: 'Archivo', var(--font-ui);
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
-  /* ── Light theme (default): warm paper-gray neutrals, kraft accent ── */
-  --bg: #f2f1ed;
+  /* ── Light theme: warm organic kraft canvas, chalk-white paper cards, toasted cognac accent ── */
+  --bg: #f7f5f0;
   --surface: #ffffff;
-  --surface-2: #eae8e2;
-  --hover: #e7e4dd;
-  --border: #e0ddd5;
-  --border-strong: #c9c5ba;
+  --surface-2: #eeeae1;
+  --hover: #e6e1d6;
+  --border: #e2ddd2;
+  --border-strong: #cac3b4;
 
-  --ink: #232019;
-  --ink-soft: #56524a;
-  --muted: #7c786e;
+  --ink: #1c1917;
+  --ink-soft: #57534e;
+  --muted: #78716c;
 
-  --accent: #8f5c1e;
-  --accent-hover: #7a4e18;
-  --accent-soft: rgba(143, 92, 30, 0.1);
-  --accent-ink: #6e4715;
+  --accent: #a16207;
+  --accent-hover: #854d0e;
+  --accent-soft: rgba(161, 98, 7, 0.12);
+  --accent-ink: #78350f;
   --on-accent: #ffffff;
-  --focus-ring: rgba(143, 92, 30, 0.4);
+  --focus-ring: rgba(161, 98, 7, 0.35);
 
-  --red: #bb3a28;
-  --red-soft: rgba(187, 58, 40, 0.1);
-  --amber: #96690a;
-  --amber-soft: rgba(150, 105, 10, 0.12);
-  --green: #1f7a44;
-  --green-soft: rgba(31, 122, 68, 0.12);
-  --gray: #6c6f76;
-  --gray-soft: rgba(108, 111, 118, 0.12);
+  --red: #dc2626;
+  --red-soft: rgba(220, 38, 38, 0.1);
+  --amber: #d97706;
+  --amber-soft: rgba(217, 119, 6, 0.12);
+  --green: #16a34a;
+  --green-soft: rgba(22, 163, 74, 0.12);
+  --gray: #71717a;
+  --gray-soft: rgba(113, 113, 122, 0.12);
 
-  --shadow-sm: 0 1px 2px rgba(35, 32, 25, 0.07);
-  --shadow-md: 0 3px 9px rgba(35, 32, 25, 0.09), 0 0 1px rgba(35, 32, 25, 0.24);
-  --shadow-lg: 0 18px 44px rgba(35, 32, 25, 0.22), 0 0 1px rgba(35, 32, 25, 0.3);
+  --shadow-sm: 0 1px 3px rgba(28, 25, 23, 0.05), 0 1px 2px rgba(28, 25, 23, 0.03);
+  --shadow-md: 0 4px 12px rgba(28, 25, 23, 0.08), 0 1px 3px rgba(28, 25, 23, 0.04);
+  --shadow-lg: 0 20px 48px rgba(28, 25, 23, 0.16), 0 4px 12px rgba(28, 25, 23, 0.06);
   /* For dialogs floating over an undimmed page — the shadow alone does the lifting. */
-  --shadow-pop: 0 28px 70px rgba(35, 32, 25, 0.3), 0 8px 20px rgba(35, 32, 25, 0.16), 0 0 1px rgba(35, 32, 25, 0.45);
+  --shadow-pop: 0 28px 70px rgba(28, 25, 23, 0.26), 0 8px 24px rgba(28, 25, 23, 0.12), 0 0 1px rgba(28, 25, 23, 0.4);
 
   color-scheme: light;
   font-family: var(--font-ui);
@@ -50,37 +50,38 @@
 }
 
 :root[data-theme='dark'] {
-  --bg: #171511;
-  --surface: #201d18;
-  --surface-2: #282520;
-  --hover: #2e2a24;
-  --border: #353128;
-  --border-strong: #4b4639;
+  /* ── Dark theme: smoked espresso noir, dark warm timber surfaces, warm glowing caramel accent ── */
+  --bg: #15120e;
+  --surface: #1e1a15;
+  --surface-2: #27221c;
+  --hover: #312b23;
+  --border: #3c362c;
+  --border-strong: #544c3e;
 
-  --ink: #ebe8e0;
-  --ink-soft: #b3aea2;
-  --muted: #8d887b;
+  --ink: #f5f2eb;
+  --ink-soft: #c2bcae;
+  --muted: #8e8677;
 
-  --accent: #d09a4e;
-  --accent-hover: #dcaa64;
-  --accent-soft: rgba(208, 154, 78, 0.14);
-  --accent-ink: #d8a75f;
-  --on-accent: #211708;
-  --focus-ring: rgba(208, 154, 78, 0.45);
+  --accent: #d97706;
+  --accent-hover: #f59e0b;
+  --accent-soft: rgba(217, 119, 6, 0.18);
+  --accent-ink: #fbbf24;
+  --on-accent: #1c1508;
+  --focus-ring: rgba(217, 119, 6, 0.45);
 
-  --red: #e2695a;
-  --red-soft: rgba(226, 105, 90, 0.16);
-  --amber: #d3a343;
-  --amber-soft: rgba(211, 163, 67, 0.16);
-  --green: #55b07c;
-  --green-soft: rgba(85, 176, 124, 0.16);
-  --gray: #99948a;
-  --gray-soft: rgba(153, 148, 138, 0.16);
+  --red: #ef4444;
+  --red-soft: rgba(239, 68, 68, 0.16);
+  --amber: #f59e0b;
+  --amber-soft: rgba(245, 158, 11, 0.16);
+  --green: #22c55e;
+  --green-soft: rgba(34, 197, 94, 0.16);
+  --gray: #a1a1aa;
+  --gray-soft: rgba(161, 161, 170, 0.16);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow-md: 0 3px 9px rgba(0, 0, 0, 0.42);
-  --shadow-lg: 0 18px 44px rgba(0, 0, 0, 0.55);
-  --shadow-pop: 0 28px 70px rgba(0, 0, 0, 0.72), 0 8px 20px rgba(0, 0, 0, 0.5), 0 0 1px rgba(0, 0, 0, 0.85);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.6);
+  --shadow-pop: 0 28px 70px rgba(0, 0, 0, 0.75), 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 1px rgba(0, 0, 0, 0.85);
 
   color-scheme: dark;
 }

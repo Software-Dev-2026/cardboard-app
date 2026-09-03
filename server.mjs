@@ -1560,6 +1560,8 @@ async function listRoster() {
         .filter((m) => m.user_id === row.id)
         .map((m) => ({ team: m.team_slug, role: m.role })),
     }))
+
+  return rosterCache
 }
 
 async function listPendingUsers() {

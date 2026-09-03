@@ -1,6 +1,60 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Component, Fragment, useEffect, useRef, useState } from 'react'
 import type { DragEvent, FormEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import './App.css'
+
+interface ErrorBoundaryProps {
+  children: ReactNode
+  fallback?: (error: Error, reset: () => void) => ReactNode
+  onReset?: () => void
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean
+  error: Error | null
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: unknown) {
+    console.error('ErrorBoundary caught error:', error, errorInfo)
+  }
+
+  handleReset = () => {
+    this.setState({ hasError: false, error: null })
+    this.props.onReset?.()
+  }
+
+  render() {
+    if (this.state.hasError) {
+      if (this.props.fallback) {
+        return this.props.fallback(this.state.error ?? new Error('Unknown error'), this.handleReset)
+      }
+      return (
+        <div className="page" style={{ padding: '32px 20px', maxWidth: '520px', margin: '0 auto' }}>
+          <div className="panel" style={{ padding: '24px', textAlign: 'center' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: '1.1rem' }}>Something went wrong loading this view</h3>
+            <p className="quiet-text" style={{ margin: '0 0 16px', fontSize: '0.85rem' }}>
+              {this.state.error?.message || 'An unexpected rendering error occurred.'}
+            </p>
+            <button type="button" className="btn btn-primary" onClick={this.handleReset}>
+              Try again
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 import {
   createAnswer, createCard, createCardComment, createCheckin, createProject, createQuestion, createTeam,
   deleteAnswer, deleteCard, deleteCardComment, deleteCheckin, deleteCheckinGoal, deleteQuestion,
@@ -256,9 +310,9 @@ function NavItem({
 // A team board link that supports renaming its label in place (admins only;
 // the rename persists through the team API).
 function TeamNavItem({
-  label, active, onClick, onRename,
+  label, active, isPm, onClick, onRename,
 }: {
-  label: string; active: boolean; onClick: () => void; onRename?: (n: string) => void
+  label: string; active: boolean; isPm?: boolean; onClick: () => void; onRename?: (n: string) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(label)
@@ -289,6 +343,7 @@ function TeamNavItem({
     <button type="button" className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>
       <NavIcon kind="board" />
       <span className="nav-item-label">{label}</span>
+      {isPm && <span className="nav-pm-badge" title="You are a PM on this team">PM</span>}
       {active && onRename && (
         <span className="nav-rename-icon" onClick={startEdit} title="Rename board" role="button">✎</span>
       )}
@@ -559,7 +614,11 @@ function SkeletonBoard() {
 
 // floating: no backdrop dim/blur — the dialog floats over the live page and a
 // heavier shadow does the lifting. For small prompts where context matters.
-function ModalShell({ onClose, wide, floating, children }: { onClose: () => void; wide?: boolean; floating?: boolean; children: ReactNode }) {
+function ModalShell({
+  onClose, wide, floating, className = '', children,
+}: {
+  onClose: () => void; wide?: boolean; floating?: boolean; className?: string; children: ReactNode
+}) {
   useEffect(() => {
     function onKey(e: globalThis.KeyboardEvent) {
       if (e.key === 'Escape') onClose()
@@ -570,7 +629,7 @@ function ModalShell({ onClose, wide, floating, children }: { onClose: () => void
 
   return (
     <div className={`modal-backdrop ${floating ? 'modal-backdrop-clear' : ''}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className={`modal ${wide ? 'modal-wide' : ''} ${floating ? 'modal-floating' : ''}`} role="dialog" aria-modal="true">
+      <div className={`modal ${wide ? 'modal-wide' : ''} ${floating ? 'modal-floating' : ''} ${className}`} role="dialog" aria-modal="true">
         {children}
       </div>
     </div>
@@ -748,7 +807,7 @@ function TaskCard({
 
   return (
     <article
-      className="card"
+      className={`card priority-${task.priority} status-${task.cardStatus}`}
       style={{ animationDelay: `${Math.min(index, 8) * 30}ms` }}
       draggable={canEdit}
       onDragStart={canEdit ? handleDragStart : undefined}
@@ -756,30 +815,66 @@ function TaskCard({
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(task.id) } }}
       role="button"
       tabIndex={0}
+      aria-label={`${task.title}, priority ${task.priority}, status ${task.cardStatus}`}
     >
       <div className="card-top">
-        <span className={`priority-badge priority-${task.priority}`}>{priorityLabel(task.priority)}</span>
-        {shownTags.map((tag) => (
-          <span key={tag} className={`tag-chip tag-${tag.toLowerCase().replace(' ', '-')} active static`}>{tag}</span>
-        ))}
+        <div className="card-top-tags">
+          <span className={`card-priority-pill priority-${task.priority}`}>
+            {task.priority === 'high' && (
+              <svg viewBox="0 0 12 12" width="10" height="10" fill="currentColor" className="priority-icon" aria-hidden="true">
+                <path d="M6 1.5L10.5 9.5H1.5L6 1.5Z" />
+              </svg>
+            )}
+            {task.priority === 'medium' && <span className="priority-bar" aria-hidden="true" />}
+            {task.priority === 'low' && <span className="priority-dot" aria-hidden="true" />}
+            <span>{priorityLabel(task.priority)}</span>
+          </span>
+          {shownTags.map((tag) => {
+            const isBlocked = tag === 'Blocked'
+            const isHelp = tag === 'Need Help'
+            return (
+              <span
+                key={tag}
+                className={`card-tag ${isBlocked ? 'tag-blocked' : isHelp ? 'tag-need-help' : 'tag-custom'}`}
+              >
+                {isBlocked ? '⊘ Blocked' : isHelp ? '? Need Help' : `#${tag}`}
+              </span>
+            )
+          })}
+        </div>
+        <span className="card-id-tag">#{task.id}</span>
       </div>
+
       <h3 className="card-title">{task.title}</h3>
       {task.description && <p className="card-desc">{task.description}</p>}
+
       <div className="card-meta">
-        <span className="avatar-stack" title={task.assignee}>
-          {task.assignees.length === 0 ? (
-            <span className="avatar avatar-sm">{initialOf('Unassigned')}</span>
-          ) : (
-            task.assignees.slice(0, 3).map((a) => (
-              <span key={a.id} className="avatar avatar-sm">{initialOf(a.name)}</span>
-            ))
-          )}
-          {task.assignees.length > 3 && (
-            <span className="avatar avatar-sm avatar-more">+{task.assignees.length - 3}</span>
-          )}
+        <div className="card-assignee-wrap" title={task.assignee}>
+          <span className="avatar-stack">
+            {task.assignees.length === 0 ? (
+              <span className="avatar avatar-sm avatar-unassigned" title="Unassigned">?</span>
+            ) : (
+              task.assignees.slice(0, 3).map((a) => (
+                <span key={a.id} className="avatar avatar-sm">{initialOf(a.name)}</span>
+              ))
+            )}
+            {task.assignees.length > 3 && (
+              <span className="avatar avatar-sm avatar-more">+{task.assignees.length - 3}</span>
+            )}
+          </span>
+          <span className="card-assignee-name">
+            {task.assignees.length === 0 ? 'Unassigned' : task.assignees[0]?.name}
+            {task.assignees.length > 1 && ` +${task.assignees.length - 1}`}
+          </span>
+        </div>
+
+        <span className={`card-due-badge due-${dueState.tone}`}>
+          <svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.5" className="due-icon" aria-hidden="true">
+            <rect x="1.5" y="2.5" width="11" height="10" rx="2" />
+            <path d="M1.5 5.5h11M4.5 1v2.5M9.5 1v2.5" />
+          </svg>
+          <span>{dueState.label}</span>
         </span>
-        <span className="card-assignee">{task.assignee}</span>
-        <span className={`due-chip due-${dueState.tone}`}>{dueState.label}</span>
       </div>
     </article>
   )
@@ -812,8 +907,11 @@ function BoardColumn({
       onDrop={handleDrop}
     >
       <header className="col-head">
-        <span className={`col-dot col-dot-${sectionId}`} />
-        <span className="col-name">{label}</span>
+        <div className="col-head-left">
+          <span className={`col-dot col-dot-${sectionId}`} />
+          <span className="col-name">{label}</span>
+          <span className="col-count">{tasks.length}</span>
+        </div>
       </header>
       <div className="col-cards">
         {tasks.length === 0 ? (
@@ -991,50 +1089,75 @@ function CardDetailModal({
   }
 
   return (
-    <ModalShell onClose={onClose} wide>
-      <header className="modal-head">
+    <ModalShell onClose={onClose} wide className={`card-detail-modal priority-${task.priority} status-${task.cardStatus}`}>
+      <header className="modal-head card-detail-modal-head">
         <div className="modal-head-info">
-          <span className="modal-eyebrow">{teamNames[task.team] ?? task.team} · {statusLabel(task.cardStatus)}</span>
+          <span className="card-id-pill">#{task.id}</span>
+          <span className="modal-eyebrow">{teamNames[task.team] ?? task.team}</span>
+          <span className="detail-eyebrow-sep">/</span>
+          <span className={`detail-status-pill status-${task.cardStatus}`}>
+            <span className={`col-dot col-dot-${task.cardStatus}`} />
+            {statusLabel(task.cardStatus)}
+          </span>
           {remoteEditNotice && <span className="remote-notice">Updated remotely</span>}
         </div>
-        <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
+        <button type="button" className="icon-btn modal-close-btn" onClick={onClose} aria-label="Close">✕</button>
       </header>
       <div className="card-modal-grid">
         <div className="card-modal-main">
-          <input
-            className="detail-title"
-            value={title}
-            readOnly={!canEdit}
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={commitTitle}
-            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-            aria-label="Card title"
-          />
-          <textarea
-            className="detail-desc"
-            value={description}
-            placeholder={canEdit ? 'Add a description…' : 'No description'}
-            rows={3}
-            readOnly={!canEdit}
-            onChange={(e) => setDescription(e.target.value)}
-            onBlur={commitDescription}
-            aria-label="Card description"
-          />
+          <div className="detail-field-group">
+            <input
+              className="detail-title"
+              value={title}
+              readOnly={!canEdit}
+              placeholder="Card title…"
+              onChange={(e) => setTitle(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+              aria-label="Card title"
+            />
+          </div>
+          <div className="detail-field-group">
+            <label className="prop-micro-label">Description</label>
+            <textarea
+              className="detail-desc"
+              value={description}
+              placeholder={canEdit ? 'Add context, specifications, or notes…' : 'No description provided.'}
+              rows={4}
+              readOnly={!canEdit}
+              onChange={(e) => setDescription(e.target.value)}
+              onBlur={commitDescription}
+              aria-label="Card description"
+            />
+          </div>
           <section className="detail-section">
-            <h4 className="section-label">Comments</h4>
+            <div className="section-head">
+              <svg className="section-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
+                <path d="M2.5 3A1.5 1.5 0 001 4.5v7A1.5 1.5 0 002.5 13h1.75v2.25a.75.75 0 001.28.53L8.56 13H13.5A1.5 1.5 0 0015 11.5v-7A1.5 1.5 0 0013.5 3h-11z"/>
+              </svg>
+              <h4 className="section-label">Discussion</h4>
+            </div>
             <CardComments cardId={task.id} currentUserId={currentUserId} canModerate={canModerateComments} />
           </section>
           <section className="detail-section">
-            <h4 className="section-label">Activity</h4>
+            <div className="section-head">
+              <svg className="section-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
+                <path fillRule="evenodd" d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm8-3.25a.75.75 0 01.75.75v2.69l1.72 1.72a.75.75 0 11-1.06 1.06l-2-2A.75.75 0 017.25 8V5.5A.75.75 0 018 4.75z" clipRule="evenodd"/>
+              </svg>
+              <h4 className="section-label">History</h4>
+            </div>
             <CardActivity cardId={task.id} refreshToken={refreshToken} />
           </section>
         </div>
         <aside className="card-modal-props">
+          <div className="prop-group-title">Properties</div>
           <div className="prop">
             <span className="prop-label">Status</span>
-            <select value={task.cardStatus} disabled={!canEdit} onChange={(e) => commit({ cardStatus: e.target.value as CardStatus })}>
-              {CARD_STATUSES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-            </select>
+            <div className="select-wrap">
+              <select value={task.cardStatus} disabled={!canEdit} onChange={(e) => commit({ cardStatus: e.target.value as CardStatus })}>
+                {CARD_STATUSES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+            </div>
           </div>
           <div className="prop">
             <span className="prop-label">Priority</span>
@@ -1048,15 +1171,17 @@ function CardDetailModal({
           </div>
           <div className="prop">
             <span className="prop-label">Due date</span>
-            <input ref={dueDateRef} type="date" value={task.dueDate} disabled={!canEdit} onChange={(e) => commit({ dueDate: e.target.value })} />
+            <input ref={dueDateRef} type="date" className="prop-date-input" value={task.dueDate} disabled={!canEdit} onChange={(e) => commit({ dueDate: e.target.value })} />
           </div>
           <div className="prop">
             <span className="prop-label">Team</span>
-            <select value={task.team} disabled={!canEdit} onChange={(e) => commit({ team: e.target.value as TeamId })}>
-              {teams.filter((t) => !t.archived || t.slug === task.team).map((t) => (
-                <option key={t.slug} value={t.slug}>{t.name}{t.archived ? ' (archived)' : ''}</option>
-              ))}
-            </select>
+            <div className="select-wrap">
+              <select value={task.team} disabled={!canEdit} onChange={(e) => commit({ team: e.target.value as TeamId })}>
+                {teams.filter((t) => !t.archived || t.slug === task.team).map((t) => (
+                  <option key={t.slug} value={t.slug}>{t.name}{t.archived ? ' (archived)' : ''}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="prop">
             <span className="prop-label">Labels</span>
@@ -1067,12 +1192,12 @@ function CardDetailModal({
             <div className="prop prop-danger">
               <button
                 type="button"
-                className={`btn btn-sm ${confirmingDelete ? 'btn-danger' : 'btn-ghost'}`}
+                className={`btn btn-sm btn-delete-card ${confirmingDelete ? 'btn-danger' : 'btn-ghost'}`}
                 onClick={() => void handleDelete()}
                 onBlur={() => setConfirmingDelete(false)}
                 disabled={isDeleting}
               >
-                {isDeleting ? 'Deleting…' : confirmingDelete ? 'Really delete? This is permanent' : 'Delete card'}
+                {isDeleting ? 'Deleting…' : confirmingDelete ? 'Confirm permanent delete' : 'Delete card'}
               </button>
             </div>
           )}
@@ -1129,26 +1254,31 @@ function NewCardModal({
   }
 
   return (
-    <ModalShell onClose={onClose}>
+    <ModalShell onClose={onClose} className="new-card-modal">
       <header className="modal-head">
         <span className="modal-eyebrow">New card · {teamNames[draft.team] ?? draft.team}</span>
-        <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
+        <button type="button" className="icon-btn modal-close-btn" onClick={onClose} aria-label="Close">✕</button>
       </header>
       <form className="new-card-form" onSubmit={(e) => void handleSubmit(e)}>
-        <input
-          className="detail-title"
-          placeholder="Card title"
-          value={draft.title}
-          onChange={(e) => update('title', e.target.value)}
-          autoFocus
-        />
-        <textarea
-          className="detail-desc"
-          placeholder="What needs to happen?"
-          value={draft.description}
-          rows={3}
-          onChange={(e) => update('description', e.target.value)}
-        />
+        <div className="detail-field-group">
+          <input
+            className="detail-title"
+            placeholder="Card title…"
+            value={draft.title}
+            onChange={(e) => update('title', e.target.value)}
+            autoFocus
+          />
+        </div>
+        <div className="detail-field-group">
+          <label className="prop-micro-label">Description</label>
+          <textarea
+            className="detail-desc"
+            placeholder="What needs to happen?"
+            value={draft.description}
+            rows={3}
+            onChange={(e) => update('description', e.target.value)}
+          />
+        </div>
         <div className="new-card-props">
           <div className="prop">
             <span className="prop-label">Assignees</span>
@@ -1157,22 +1287,24 @@ function NewCardModal({
           </div>
           <div className="prop">
             <span className="prop-label">Due date</span>
-            <input type="date" value={draft.dueDate} onChange={(e) => update('dueDate', e.target.value)} />
+            <input type="date" className="prop-date-input" value={draft.dueDate} onChange={(e) => update('dueDate', e.target.value)} />
           </div>
           <div className="prop">
             <span className="prop-label">Team</span>
-            <select value={draft.team} onChange={(e) => update('team', e.target.value as TeamId)}>
-              {teams.filter((t) => !t.archived).map((t) => (
-                <option key={t.slug} value={t.slug}>{t.name}</option>
-              ))}
-            </select>
+            <div className="select-wrap">
+              <select value={draft.team} onChange={(e) => update('team', e.target.value as TeamId)}>
+                {teams.filter((t) => !t.archived).map((t) => (
+                  <option key={t.slug} value={t.slug}>{t.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="prop">
             <span className="prop-label">Priority</span>
             <PriorityPicker name="new-card-priority" value={draft.priority}
               onChange={(p) => update('priority', p)} />
           </div>
-          <div className="prop">
+          <div className="prop" style={{ gridColumn: '1 / -1' }}>
             <span className="prop-label">Labels</span>
             <TagToggleRow selected={draft.presetTags} onChange={(tags) => update('presetTags', tags)} />
           </div>
@@ -1301,7 +1433,7 @@ function QnaCard({
 // anything else, and multi-team PMs switch teams via the view-bar toggle.
 
 function PmNotes({
-  team, tasks, teamName,
+  team, tasks = [], teamName,
 }: {
   team: TeamId
   tasks: Task[]
@@ -1313,8 +1445,9 @@ function PmNotes({
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
   const [selectedId, setSelectedId] = useState<string>('scratchpad')
   const scratchRef = useRef<HTMLDivElement>(null)
+  const safeTasks = Array.isArray(tasks) ? tasks : []
 
-  const selectedTask = tasks.find((t) => String(t.id) === selectedId) ?? null
+  const selectedTask = safeTasks.find((t) => String(t.id) === selectedId) ?? null
 
   function setNote(taskId: string, text: string) {
     setNotes((cur) => ({ ...cur, [taskId]: text }))
@@ -1323,11 +1456,12 @@ function PmNotes({
   useEffect(() => {
     let isActive = true
     async function loadSavedNotes() {
+      if (!team) return
       try {
         const saved = await fetchPmNotes(team)
         if (!isActive) return
-        setNotes(saved.notes)
-        setScratchNotes(saved.scratchNotes)
+        setNotes(saved?.notes || {})
+        setScratchNotes(saved?.scratchNotes || '')
         setSavedNotesLoaded(true)
       } catch {
         if (isActive) setSavedNotesLoaded(false)
@@ -1474,7 +1608,7 @@ function PmNotes({
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 function Dashboard({
-  team, teamName, tasks,
+  team, teamName, tasks = [],
 }: {
   team: TeamId
   teamName: string
@@ -1482,13 +1616,18 @@ function Dashboard({
 }) {
   const [activity, setActivity] = useState<TeamActivityEvent[]>([])
   const [isLoadingActivity, setIsLoadingActivity] = useState(true)
+  const safeTasks = Array.isArray(tasks) ? tasks : []
 
   useEffect(() => {
     let isActive = true
     async function load() {
+      if (!team) {
+        setIsLoadingActivity(false)
+        return
+      }
       try {
         const data = await fetchTeamActivity(team)
-        if (isActive) setActivity(data)
+        if (isActive) setActivity(Array.isArray(data) ? data : [])
       } finally {
         if (isActive) setIsLoadingActivity(false)
       }
@@ -1511,7 +1650,7 @@ function Dashboard({
 
   // All four tiles count open cards only — a card that's Done can't be
   // overdue or blocked anymore.
-  const openTasks = tasks.filter((t) => t.cardStatus !== 'done')
+  const openTasks = safeTasks.filter((t) => t && t.cardStatus !== 'done')
   const overdueCount = openTasks.filter((t) => getDueState(t.dueDate).tone === 'late').length
   const dueSoonCount = openTasks.filter((t) => getDueState(t.dueDate).tone === 'soon').length
   const blockedCount = openTasks.filter((t) => t.tags.includes('Blocked')).length
@@ -1793,7 +1932,7 @@ function CheckinComposer({
 }
 
 function TeamCheckins({
-  team, teamName, roster, tasks,
+  team, teamName, roster = [], tasks = [],
 }: {
   team: TeamId
   teamName: string
@@ -1805,16 +1944,22 @@ function TeamCheckins({
   const [error, setError] = useState('')
   const [selectedId, setSelectedId] = useState('')
 
-  const students = roster.filter((u) => u.memberships.some((m) => m.team === team))
+  const safeRoster = Array.isArray(roster) ? roster : []
+  const safeTasks = Array.isArray(tasks) ? tasks : []
+  const students = safeRoster.filter((u) => u && Array.isArray(u.memberships) && u.memberships.some((m) => m.team === team))
   const selected = students.find((s) => s.id === selectedId) ?? students[0] ?? null
 
   useEffect(() => {
     let isActive = true
     async function load() {
+      if (!team) {
+        setIsLoading(false)
+        return
+      }
       try {
         setIsLoading(true); setError('')
         const data = await fetchTeamCheckins(team)
-        if (isActive) setCheckins(data)
+        if (isActive) setCheckins(Array.isArray(data) ? data : [])
       } catch (err) {
         if (isActive) setError(err instanceof Error ? err.message : 'Could not load check-ins.')
       } finally {
@@ -1825,8 +1970,8 @@ function TeamCheckins({
     return () => { isActive = false }
   }, [team])
 
-  const entries = selected ? checkins.filter((c) => c.subjectUserId === selected.id) : []
-  const openCards = selected ? tasks.filter((t) => isAssignedTo(t, selected.id) && t.cardStatus !== 'done') : []
+  const entries = selected ? (checkins || []).filter((c) => c && c.subjectUserId === selected.id) : []
+  const openCards = selected ? safeTasks.filter((t) => isAssignedTo(t, selected.id) && t.cardStatus !== 'done') : []
 
   function lastCheckinDate(studentId: string): string | null {
     const entry = checkins.find((c) => c.subjectUserId === studentId)
@@ -2483,13 +2628,13 @@ function AdminPanel({
 
 function App() {
   const cached = loadCachedBoardData()
-  const [tasks, setTasks] = useState<Task[]>(() => cached?.tasks ?? [])
-  const [roster, setRoster] = useState<RosterUser[]>(() => cached?.roster ?? [])
+  const [tasks, setTasks] = useState<Task[]>(() => (Array.isArray(cached?.tasks) ? cached.tasks : []))
+  const [roster, setRoster] = useState<RosterUser[]>(() => (Array.isArray(cached?.roster) ? cached.roster : []))
   const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([])
-  const [teams, setTeams] = useState<Team[]>(() => cached?.teams ?? [])
-  const [projects, setProjects] = useState<Project[]>(() => cached?.projects ?? [])
+  const [teams, setTeams] = useState<Team[]>(() => (Array.isArray(cached?.teams) ? cached.teams : []))
+  const [projects, setProjects] = useState<Project[]>(() => (Array.isArray(cached?.projects) ? cached.projects : []))
   const [activeTab, setActiveTab] = useState<TabId>(() => loadPreference('active_tab', ''))
-  const [qnaItems, setQnaItems] = useState<QnaQuestion[]>(() => cached?.qnaItems ?? [])
+  const [qnaItems, setQnaItems] = useState<QnaQuestion[]>(() => (Array.isArray(cached?.qnaItems) ? cached.qnaItems : []))
   const [isLoading, setIsLoading] = useState(() => cached === null)
   const [error, setError] = useState('')
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
@@ -2506,6 +2651,9 @@ function App() {
   const [undoneConfirm, setUndoneConfirm] = useState<{ taskId: Task['id']; toStatus: CardStatus } | null>(null)
   const [dueDateFocusId, setDueDateFocusId] = useState<Task['id'] | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
+  const [teamTab, setTeamTab] = useState<'board' | 'dashboard' | 'checkins' | 'notes'>('board')
+  const [cardSearch, setCardSearch] = useState('')
+  const [tagFilter, setTagFilter] = useState<string | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected')
   const [onlineUsers, setOnlineUsers] = useState<RealtimePresenceUser[]>([])
   const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([])
@@ -2724,11 +2872,23 @@ function App() {
     (t) => !t.archived && !(t.projectSlug && archivedProjectSlugs.has(t.projectSlug)),
   )
   const teamNames: Record<TeamId, string> = Object.fromEntries(teams.map((t) => [t.slug, t.name]))
-  const tasksFor = (slug: TeamId) => tasks.filter((t) => t.team === slug)
+  const tasksFor = (slug: TeamId) => (tasks || []).filter((t) => t && t.team === slug)
   const rawActiveTasks = tasksFor(activeTab)
-  const activeTasks = myTasksOnly
+  const userScopedTasks = myTasksOnly
     ? rawActiveTasks.filter((t) => isAssignedTo(t, authUser?.id ?? null))
     : rawActiveTasks
+  const activeTasks = userScopedTasks.filter((t) => {
+    if (tagFilter && !t.tags.includes(tagFilter)) return false
+    if (cardSearch.trim()) {
+      const q = cardSearch.toLowerCase().trim()
+      const matchTitle = t.title.toLowerCase().includes(q)
+      const matchDesc = t.description.toLowerCase().includes(q)
+      const matchAssignee = t.assignees.some((a) => a.name.toLowerCase().includes(q))
+      const matchTag = t.tags.some((tag) => tag.toLowerCase().includes(q))
+      if (!matchTitle && !matchDesc && !matchAssignee && !matchTag) return false
+    }
+    return true
+  })
   const defaultName = authUser?.displayName ?? ''
 
   function selectTab(tab: TabId) {
@@ -2985,41 +3145,80 @@ function App() {
   const dashboardTeamResolved: TeamId = resolvePickedTeam(dashboardTeam)
   const checkinTeamResolved: TeamId = resolvePickedTeam(checkinTeam)
   const notesTeamResolved: TeamId = pmTeams.includes(notesTeam) ? notesTeam : (pmTeams[0] ?? '')
-  const isBoardView = teams.some((t) => t.slug === activeTab)
+  const currentTeam = teams.find((t) => t.slug === activeTab)
+  const currentProject = currentTeam?.projectSlug ? projects.find((p) => p.slug === currentTeam.projectSlug) : null
+  const isBoardView = currentTeam !== undefined
+  const canManageCurrentTeam = isBoardView && (authUser.isAdmin || pmTeams.includes(activeTab))
   const selectedCard = selectedCardId === null ? null : tasks.find((t) => t.id === selectedCardId) ?? null
 
   const viewTitle =
-    activeTab === 'qna' ? 'Q&A'
+    activeTab === 'qna' ? 'Q&A Forum'
+    : isBoardView ? (
+        teamTab === 'dashboard' ? `${teamNames[activeTab] ?? activeTab} Dashboard`
+        : teamTab === 'checkins' ? `${teamNames[activeTab] ?? activeTab} Check-ins`
+        : teamTab === 'notes' ? `${teamNames[activeTab] ?? activeTab} PM Notes`
+        : `${teamNames[activeTab] ?? activeTab}`
+      )
     : activeTab === 'dashboard' ? `${teamNames[dashboardTeamResolved] ?? ''} Dashboard`
     : activeTab === 'notes' ? `${teamNames[notesTeamResolved] ?? notesTeamResolved} Notes`
     : activeTab === 'checkins' && canManageCheckins ? `${teamNames[checkinTeamResolved] ?? ''} Check-ins`
-    : activeTab === 'checkins' || activeTab === 'my-checkins' ? 'My check-ins'
-    : activeTab === 'admin' ? 'Manage roles'
-    : activeTab === 'review' ? 'Review new students'
-    : activeTab === 'profile' ? 'Your profile'
-    : `${teamNames[activeTab] ?? activeTab} Board`
+    : activeTab === 'checkins' || activeTab === 'my-checkins' ? 'My Check-ins'
+    : activeTab === 'admin' ? 'Manage Classroom'
+    : activeTab === 'review' ? 'Review Students'
+    : activeTab === 'profile' ? 'Your Profile'
+    : `${teamNames[activeTab] ?? activeTab}`
 
   // Remounting the keyed wrapper below replays the view-in animation whenever
   // the tab — or the team inside a PM view — changes.
   const viewKey =
-    activeTab === 'dashboard' ? `dashboard-${dashboardTeamResolved}`
+    isBoardView ? `${activeTab}-${teamTab}`
+    : activeTab === 'dashboard' ? `dashboard-${dashboardTeamResolved}`
     : activeTab === 'notes' ? `notes-${notesTeamResolved}`
     : activeTab === 'checkins' && canManageCheckins ? `checkins-${checkinTeamResolved}`
     : activeTab
 
   const viewEyebrow =
-    activeTab === 'qna' ? 'Forum'
-    : activeTab === 'dashboard' || activeTab === 'notes' ? 'PM view'
-    : activeTab === 'checkins' && canManageCheckins ? 'PM view'
-    : activeTab === 'checkins' || activeTab === 'my-checkins' ? 'You'
-    : activeTab === 'admin' || activeTab === 'review' ? 'Admin'
-    : activeTab === 'profile' ? 'You'
+    activeTab === 'qna' ? 'Community'
+    : isBoardView ? (
+        teamTab === 'dashboard' ? 'Team Metrics'
+        : teamTab === 'checkins' ? '1:1 Check-ins'
+        : teamTab === 'notes' ? 'PM Scratchpad'
+        : (currentProject?.name ?? 'Board')
+      )
+    : activeTab === 'dashboard' || activeTab === 'notes' ? 'PM View'
+    : activeTab === 'checkins' && canManageCheckins ? 'PM View'
+    : activeTab === 'checkins' || activeTab === 'my-checkins' ? 'Personal'
+    : activeTab === 'admin' || activeTab === 'review' ? 'Administration'
+    : activeTab === 'profile' ? 'Account'
     : 'Board'
 
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="sidebar-brand"><Wordmark /></div>
+        {authUser.isAdmin && (
+          <div className="admin-command-strip">
+            <button
+              type="button"
+              className={`admin-strip-item ${activeTab === 'review' ? 'active' : ''}`}
+              onClick={() => selectTab('review')}
+            >
+              <NavIcon kind="review" />
+              <span className="admin-strip-text">Review students</span>
+              {pendingUsers.length > 0 && (
+                <span className="admin-pill-badge">{pendingUsers.length}</span>
+              )}
+            </button>
+            <button
+              type="button"
+              className={`admin-strip-item ${activeTab === 'admin' ? 'active' : ''}`}
+              onClick={() => selectTab('admin')}
+            >
+              <NavIcon kind="admin" />
+              <span className="admin-strip-text">Manage classroom</span>
+            </button>
+          </div>
+        )}
         <nav className="side-nav">
           {activeProjects.map((project) => {
             const projectTeams = visibleTeams.filter((t) => t.projectSlug === project.slug)
@@ -3031,8 +3230,9 @@ function App() {
                   <TeamNavItem
                     key={team.slug}
                     label={team.name}
-                    active={activeTab === team.slug}
-                    onClick={() => selectTab(team.slug)}
+                    active={isBoardView && activeTab === team.slug}
+                    isPm={pmTeams.includes(team.slug)}
+                    onClick={() => { selectTab(team.slug); setTeamTab('board') }}
                     onRename={authUser.isAdmin ? (n) => void handleUpdateTeam(team.slug, { name: n }) : undefined}
                   />
                 ))}
@@ -3046,8 +3246,9 @@ function App() {
                 <TeamNavItem
                   key={team.slug}
                   label={team.name}
-                  active={activeTab === team.slug}
-                  onClick={() => selectTab(team.slug)}
+                  active={isBoardView && activeTab === team.slug}
+                  isPm={pmTeams.includes(team.slug)}
+                  onClick={() => { selectTab(team.slug); setTeamTab('board') }}
                   onRename={authUser.isAdmin ? (n) => void handleUpdateTeam(team.slug, { name: n }) : undefined}
                 />
               ))}
@@ -3057,29 +3258,49 @@ function App() {
           <NavItem icon="qna" label="Q&A" active={activeTab === 'qna'} onClick={() => selectTab('qna')} />
           <NavItem icon="checkins" label="My Check-ins" active={activeTab === 'my-checkins'} onClick={() => selectTab('my-checkins')} />
           {canSeeDashboard && (
-            <p className="nav-eyebrow">Manage</p>
+            <p className="nav-eyebrow">Overview</p>
           )}
           {canSeeDashboard && (
-            <NavItem icon="dashboard" label="Dashboard" active={activeTab === 'dashboard'} onClick={() => selectTab('dashboard')} />
+            <NavItem
+              icon="dashboard"
+              label="Dashboard"
+              active={activeTab === 'dashboard' || (isBoardView && teamTab === 'dashboard')}
+              onClick={() => {
+                if (isBoardView && canManageCurrentTeam) {
+                  setTeamTab('dashboard')
+                } else {
+                  selectTab('dashboard')
+                }
+              }}
+            />
           )}
           {canManageCheckins && (
-            <NavItem icon="checkins" label="Check-ins" active={activeTab === 'checkins'} onClick={() => selectTab('checkins')} />
+            <NavItem
+              icon="checkins"
+              label="Team Check-ins"
+              active={activeTab === 'checkins' || (isBoardView && teamTab === 'checkins')}
+              onClick={() => {
+                if (isBoardView && canManageCurrentTeam) {
+                  setTeamTab('checkins')
+                } else {
+                  selectTab('checkins')
+                }
+              }}
+            />
           )}
           {isPm && (
-            <NavItem icon="notes" label="PM Notes" active={activeTab === 'notes'} onClick={() => selectTab('notes')} />
-          )}
-          {authUser.isAdmin && (
-            <>
-              <p className="nav-eyebrow">Admin</p>
-              <NavItem icon="admin" label="Admin" active={activeTab === 'admin'} onClick={() => selectTab('admin')} />
-              <NavItem
-                icon="review"
-                label="Review students"
-                active={activeTab === 'review'}
-                onClick={() => selectTab('review')}
-                dot={pendingUsers.length > 0}
-              />
-            </>
+            <NavItem
+              icon="notes"
+              label="PM Notes"
+              active={activeTab === 'notes' || (isBoardView && teamTab === 'notes')}
+              onClick={() => {
+                if (isBoardView && pmTeams.includes(activeTab)) {
+                  setTeamTab('notes')
+                } else {
+                  selectTab('notes')
+                }
+              }}
+            />
           )}
         </nav>
         <div className="sidebar-foot">
@@ -3097,25 +3318,69 @@ function App() {
         <header className="view-bar">
           <div className="view-title-wrap">
             <p className="view-eyebrow">{viewEyebrow}</p>
-            <h1 className="view-title">{viewTitle}</h1>
+            <div className="view-title-row">
+              <h1 className="view-title">{viewTitle}</h1>
+              {isBoardView && canManageCurrentTeam && (
+                <div className="team-hub-tabs" role="tablist">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={teamTab === 'board'}
+                    className={`team-hub-tab ${teamTab === 'board' ? 'active' : ''}`}
+                    onClick={() => setTeamTab('board')}
+                  >
+                    Board
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={teamTab === 'dashboard'}
+                    className={`team-hub-tab ${teamTab === 'dashboard' ? 'active' : ''}`}
+                    onClick={() => setTeamTab('dashboard')}
+                  >
+                    Dashboard
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={teamTab === 'checkins'}
+                    className={`team-hub-tab ${teamTab === 'checkins' ? 'active' : ''}`}
+                    onClick={() => setTeamTab('checkins')}
+                  >
+                    Check-ins
+                  </button>
+                  {(authUser.isAdmin || pmTeams.includes(activeTab)) && (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={teamTab === 'notes'}
+                      className={`team-hub-tab ${teamTab === 'notes' ? 'active' : ''}`}
+                      onClick={() => setTeamTab('notes')}
+                    >
+                      PM Notes
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
           <div className="view-actions">
             <div className="view-header-status">
-              <div
-                className={`live-badge ${connectionStatus}`}
-                title={
-                  connectionStatus === 'connected'
-                    ? 'Real-time sync active: live updates from all teammates'
-                    : connectionStatus === 'connecting'
-                    ? 'Connecting to real-time sync…'
-                    : 'Offline: cached data active'
-                }
-              >
-                <span className="live-badge-dot" />
-                <span className="live-badge-label">
-                  {connectionStatus === 'connected' ? 'Live' : connectionStatus === 'connecting' ? 'Connecting…' : 'Offline'}
-                </span>
-              </div>
+              {connectionStatus !== 'connected' && (
+                <div
+                  className={`sync-error-tag ${connectionStatus}`}
+                  title={
+                    connectionStatus === 'connecting'
+                      ? 'Reconnecting to live sync…'
+                      : 'Sync offline. Working with cached data.'
+                  }
+                >
+                  <span className="sync-error-dot" />
+                  <span className="sync-error-label">
+                    {connectionStatus === 'connecting' ? 'Reconnecting…' : 'Sync offline'}
+                  </span>
+                </div>
+              )}
               {onlineUsers.length > 0 && (
                 <div
                   className="presence-pile"
@@ -3132,11 +3397,8 @@ function App() {
                 </div>
               )}
             </div>
-            {(() => {
-              // Team switcher for the PM views. Dashboard and Check-ins let an
-              // admin pick any visible team; PM Notes is strictly the teams the
-              // viewer holds the PM role on (the server rejects anything else,
-              // even for admins, so the picker must match).
+            {!isBoardView && (() => {
+              // Team switcher for the legacy PM views.
               const pmPickerTeams = teams.filter((t) => pmTeams.includes(t.slug))
               const managePickerTeams = authUser.isAdmin ? visibleTeams : pmPickerTeams
               const pickers: Partial<Record<string, [TeamId, (slug: TeamId) => void, Team[]]>> = {
@@ -3160,29 +3422,37 @@ function App() {
                 </div>
               )
             })()}
-            {isBoardView && (
-              <>
-                <button
-                  type="button"
-                  className={`filter-chip ${myTasksOnly ? 'active' : ''}`}
-                  onClick={() => setMyTasksOnly((v) => !v)}
-                  aria-pressed={myTasksOnly}
-                >
-                  My Tasks
-                </button>
-                <button type="button" className="btn btn-primary" onClick={() => setNewCardOpen(true)}>
-                  + New card
-                </button>
-              </>
-            )}
           </div>
         </header>
 
         <div className="view-body">
           {error && <p className="error-banner">{error}</p>}
 
-          <div key={viewKey} className="view-fade">
-          {activeTab === 'notes' && isPm && notesTeamResolved ? (
+          <ErrorBoundary key={viewKey} onReset={() => setTeamTab('board')}>
+            <div className="view-fade">
+          {isBoardView && teamTab === 'dashboard' ? (
+            <Dashboard
+              key={activeTab}
+              team={activeTab}
+              teamName={teamNames[activeTab] ?? activeTab}
+              tasks={tasksFor(activeTab)}
+            />
+          ) : isBoardView && teamTab === 'checkins' ? (
+            <TeamCheckins
+              key={activeTab}
+              team={activeTab}
+              teamName={teamNames[activeTab] ?? activeTab}
+              roster={roster}
+              tasks={tasksFor(activeTab)}
+            />
+          ) : isBoardView && teamTab === 'notes' ? (
+            <PmNotes
+              key={activeTab}
+              team={activeTab}
+              tasks={tasksFor(activeTab)}
+              teamName={teamNames[activeTab] ?? activeTab}
+            />
+          ) : activeTab === 'notes' && isPm && notesTeamResolved ? (
             <PmNotes
               key={notesTeamResolved}
               team={notesTeamResolved}
@@ -3246,6 +3516,65 @@ function App() {
             <SkeletonBoard />
           ) : (
             <>
+              <div className="board-toolbar">
+                <div className="board-toolbar-filters">
+                  <div className="search-box">
+                    <svg className="search-icon" viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+                      <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" />
+                    </svg>
+                    <input
+                      type="text"
+                      className="board-search-input"
+                      placeholder="Filter cards, assignees, labels…"
+                      value={cardSearch}
+                      onChange={(e) => setCardSearch(e.target.value)}
+                    />
+                    {cardSearch && (
+                      <button type="button" className="search-clear-btn" onClick={() => setCardSearch('')} aria-label="Clear filter">✕</button>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className={`filter-chip ${myTasksOnly ? 'active' : ''}`}
+                    onClick={() => setMyTasksOnly((v) => !v)}
+                    aria-pressed={myTasksOnly}
+                  >
+                    My tasks
+                  </button>
+                  <button
+                    type="button"
+                    className={`filter-chip ${tagFilter === 'Blocked' ? 'active filter-blocked' : ''}`}
+                    onClick={() => setTagFilter((v) => (v === 'Blocked' ? null : 'Blocked'))}
+                  >
+                    Blocked
+                  </button>
+                  <button
+                    type="button"
+                    className={`filter-chip ${tagFilter === 'Need Help' ? 'active filter-need-help' : ''}`}
+                    onClick={() => setTagFilter((v) => (v === 'Need Help' ? null : 'Need Help'))}
+                  >
+                    Need Help
+                  </button>
+                  {(myTasksOnly || tagFilter || cardSearch) && (
+                    <button
+                      type="button"
+                      className="filter-reset-btn"
+                      onClick={() => {
+                        setMyTasksOnly(false)
+                        setTagFilter(null)
+                        setCardSearch('')
+                      }}
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+                <div className="board-toolbar-actions">
+                  <button type="button" className="btn btn-primary new-card-btn" onClick={() => setNewCardOpen(true)}>
+                    <span className="btn-plus">+</span> New card
+                  </button>
+                </div>
+              </div>
               <div className="board">
                 {CARD_STATUSES.map((s) => (
                   <BoardColumn
@@ -3267,6 +3596,7 @@ function App() {
             </>
           )}
           </div>
+          </ErrorBoundary>
         </div>
       </div>
 

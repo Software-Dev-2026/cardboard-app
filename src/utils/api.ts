@@ -91,12 +91,12 @@ export async function logout(): Promise<void> {
 
 export async function fetchCards(): Promise<CardPayload[]> {
   const data = await apiRequest<CardsResponse>('/api/cards')
-  return data.cards
+  return Array.isArray(data?.cards) ? data.cards : []
 }
 
 export async function fetchQuestions(): Promise<QnaQuestion[]> {
   const data = await apiRequest<QuestionsResponse>('/api/questions')
-  return data.questions
+  return Array.isArray(data?.questions) ? data.questions : []
 }
 
 export async function createQuestion(question: string): Promise<QnaQuestion> {
@@ -136,12 +136,12 @@ export async function savePmNotes(team: TeamId, payload: PmNotesPayload): Promis
 
 export async function fetchRoster(): Promise<RosterUser[]> {
   const data = await apiRequest<RosterResponse>('/api/roster')
-  return data.users
+  return Array.isArray(data?.users) ? data.users : []
 }
 
 export async function fetchAdminUsers(): Promise<RosterUser[]> {
   const data = await apiRequest<RosterResponse>('/api/admin/users')
-  return data.users
+  return Array.isArray(data?.users) ? data.users : []
 }
 
 export async function updateUserMemberships(userId: string, memberships: Membership[]): Promise<RosterUser> {

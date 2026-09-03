@@ -24,6 +24,9 @@ export function loadCachedBoardData(): CachedBoardData | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as CachedBoardData
     if (parsed && Array.isArray(parsed.tasks) && Array.isArray(parsed.teams)) {
+      if (!Array.isArray(parsed.roster)) parsed.roster = []
+      if (!Array.isArray(parsed.projects)) parsed.projects = []
+      if (!Array.isArray(parsed.qnaItems)) parsed.qnaItems = []
       return parsed
     }
   } catch (err) {
