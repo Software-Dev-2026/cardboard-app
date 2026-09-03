@@ -71,6 +71,11 @@ function isPortAvailable(portToTry) {
 }
 
 async function handleApi(req, res, url) {
+  if (url.pathname === '/api/events' && req.method === 'GET') {
+    await handleEventsStream(req, res)
+    return
+  }
+
   if (url.pathname === '/api/health' && req.method === 'GET') {
     sendJson(res, 200, {
       ok: true,
@@ -90,6 +95,9 @@ async function handleApi(req, res, url) {
     const user = await requireCurrentUser(req)
     const body = await readJson(req)
     const updatedUser = await updateCurrentUser(user, body)
+    rosterCache = null
+    rosterRevision++
+    broadcastEvent('roster:updated', { user: updatedUser, actor: { id: user.id, name: user.displayName } })
     sendJson(res, 200, { user: updatedUser, githubConfigured: isGithubConfigured() })
     return
   }
@@ -102,15 +110,17 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === '/api/roster' && req.method === 'GET') {
     await requireCurrentUser(req)
+    if (handleETag(req, res, `roster-${rosterRevision}`)) return
     const users = await listRoster()
-    sendJson(res, 200, { users })
+    sendJsonWithETag(res, 200, { users }, `roster-${rosterRevision}`)
     return
   }
 
   if (url.pathname === '/api/admin/users' && req.method === 'GET') {
     await requireAdmin(req)
+    if (handleETag(req, res, `roster-${rosterRevision}`)) return
     const users = await listRoster()
-    sendJson(res, 200, { users })
+    sendJsonWithETag(res, 200, { users }, `roster-${rosterRevision}`)
     return
   }
 
@@ -123,12 +133,20 @@ async function handleApi(req, res, url) {
 
   const signupReviewMatch = url.pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})\/(approve|reject)$/i)
   if (signupReviewMatch && req.method === 'POST') {
-    await requireAdmin(req)
-    const resolved = await resolveSignupRequest(signupReviewMatch[1], signupReviewMatch[2].toLowerCase() === 'approve')
+    const actor = await requireAdmin(req)
+    const isApprove = signupReviewMatch[2].toLowerCase() === 'approve'
+    const resolved = await resolveSignupRequest(signupReviewMatch[1], isApprove)
     if (!resolved) {
       sendJson(res, 404, { error: 'Sign-up request not found.' })
       return
     }
+    rosterCache = null
+    rosterRevision++
+    broadcastEvent('admin:signup_resolved', {
+      userId: signupReviewMatch[1],
+      approved: isApprove,
+      actor: { id: actor.id, name: actor.displayName },
+    })
     sendJson(res, 200, { ok: true })
     return
   }
@@ -142,19 +160,25 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'User not found.' })
       return
     }
+    rosterCache = null
+    rosterRevision++
+    broadcastEvent('roster:updated', { user: updated, actor: { id: actor.id, name: actor.displayName } })
     sendJson(res, 200, { user: updated })
     return
   }
 
   const adminMembershipsMatch = url.pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})\/memberships$/i)
   if (adminMembershipsMatch && req.method === 'PUT') {
-    await requireAdmin(req)
+    const actor = await requireAdmin(req)
     const body = await readJson(req)
     const updated = await updateUserMemberships(adminMembershipsMatch[1], body)
     if (!updated) {
       sendJson(res, 404, { error: 'User not found.' })
       return
     }
+    rosterCache = null
+    rosterRevision++
+    broadcastEvent('roster:updated', { user: updated, actor: { id: actor.id, name: actor.displayName } })
     sendJson(res, 200, { user: updated })
     return
   }
@@ -172,21 +196,29 @@ async function handleApi(req, res, url) {
     const body = await readJson(req)
     const team = resolvePmNotesTeam(user, body.team)
     const notes = await savePmNotes(user, team, body)
+    broadcastEvent('pm_notes:updated', {
+      team,
+      notes: notes.notes,
+      scratchNotes: notes.scratchNotes,
+      actor: { id: user.id, name: user.displayName },
+    })
     sendJson(res, 200, notes)
     return
   }
 
   if (url.pathname === '/api/cards' && req.method === 'GET') {
     await requireCurrentUser(req)
+    if (handleETag(req, res, `cards-${cardsRevision}`)) return
     const rows = await listCards()
-    sendJson(res, 200, { cards: rows.map(cardRowToPayload) })
+    sendJsonWithETag(res, 200, { cards: rows.map(cardRowToPayload) }, `cards-${cardsRevision}`)
     return
   }
 
   if (url.pathname === '/api/questions' && req.method === 'GET') {
     await requireCurrentUser(req)
+    if (handleETag(req, res, `questions-${questionsRevision}`)) return
     const questions = await listQuestions()
-    sendJson(res, 200, { questions })
+    sendJsonWithETag(res, 200, { questions }, `questions-${questionsRevision}`)
     return
   }
 
@@ -195,6 +227,8 @@ async function handleApi(req, res, url) {
     const body = await readJson(req)
     const question = await createQuestion(body, user)
     void notifyNewQuestion(question)
+    questionsRevision++
+    broadcastEvent('question:created', { question, actor: { id: user.id, name: user.displayName } })
     sendJson(res, 201, { question })
     return
   }
@@ -205,7 +239,10 @@ async function handleApi(req, res, url) {
     const created = await createCard(body, user)
     await recordCardEvent(created.id, user.id, 'created', null, null, null)
     void notifyNewCard(cardRowToPayload(created))
-    sendJson(res, 201, { card: cardRowToPayload(created) })
+    cardsRevision++
+    const payload = cardRowToPayload(created)
+    broadcastEvent('card:created', { card: payload, actor: { id: user.id, name: user.displayName } })
+    sendJson(res, 201, { card: payload })
     return
   }
 
@@ -214,6 +251,8 @@ async function handleApi(req, res, url) {
     const user = await requireCurrentUser(req)
     const body = await readJson(req)
     const answer = await createAnswer(answerMatch[1], body, user)
+    questionsRevision++
+    broadcastEvent('answer:created', { questionId: answerMatch[1], answer, actor: { id: user.id, name: user.displayName } })
     sendJson(res, 201, { answer })
     return
   }
@@ -252,6 +291,7 @@ async function handleApi(req, res, url) {
     const user = await requireCurrentUser(req)
     const body = await readJson(req)
     const comment = await createCardComment(cardCommentsMatch[1], body, user)
+    broadcastEvent('comment:created', { cardId: cardCommentsMatch[1], comment, actor: { id: user.id, name: user.displayName } })
     sendJson(res, 201, { comment })
     return
   }
@@ -264,6 +304,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'Comment not found.' })
       return
     }
+    broadcastEvent('comment:deleted', { cardId: cardCommentMatch[1], commentId: cardCommentMatch[2], actor: { id: user.id, name: user.displayName } })
     sendJson(res, 200, { ok: true })
     return
   }
@@ -277,7 +318,10 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'Card not found.' })
       return
     }
-    sendJson(res, 200, { card: cardRowToPayload(updated) })
+    cardsRevision++
+    const payload = cardRowToPayload(updated)
+    broadcastEvent('card:updated', { card: payload, actor: { id: user.id, name: user.displayName } })
+    sendJson(res, 200, { card: payload })
     return
   }
 
@@ -288,6 +332,8 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'Card not found.' })
       return
     }
+    cardsRevision++
+    broadcastEvent('card:deleted', { id: cardMatch[1], actor: { id: user.id, name: user.displayName } })
     sendJson(res, 200, { ok: true })
     return
   }
@@ -318,49 +364,78 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === '/api/teams' && req.method === 'GET') {
     await requireCurrentUser(req)
+    if (handleETag(req, res, `teams-${teamsRevision}`)) return
     const [teams, projects] = await Promise.all([getTeams(), getProjects()])
-    sendJson(res, 200, { teams: teams.map(teamRowToPayload), projects: projects.map(projectRowToPayload) })
+    sendJsonWithETag(res, 200, { teams: teams.map(teamRowToPayload), projects: projects.map(projectRowToPayload) }, `teams-${teamsRevision}`)
     return
   }
 
   if (url.pathname === '/api/projects' && req.method === 'POST') {
-    await requireAdmin(req)
+    const admin = await requireAdmin(req)
     const body = await readJson(req)
     const project = await createProject(body)
+    teamsRevision++
+    const [teams, projects] = await Promise.all([getTeams(), getProjects()])
+    broadcastEvent('teams:updated', {
+      teams: teams.map(teamRowToPayload),
+      projects: projects.map(projectRowToPayload),
+      actor: { id: admin.id, name: admin.displayName },
+    })
     sendJson(res, 201, { project })
     return
   }
 
   const projectPatchMatch = url.pathname.match(/^\/api\/projects\/([a-z0-9][a-z0-9-]*)$/)
   if (projectPatchMatch && req.method === 'PATCH') {
-    await requireAdmin(req)
+    const admin = await requireAdmin(req)
     const body = await readJson(req)
     const project = await updateProject(projectPatchMatch[1], body)
     if (!project) {
       sendJson(res, 404, { error: 'Project not found.' })
       return
     }
+    teamsRevision++
+    const [teams, projects] = await Promise.all([getTeams(), getProjects()])
+    broadcastEvent('teams:updated', {
+      teams: teams.map(teamRowToPayload),
+      projects: projects.map(projectRowToPayload),
+      actor: { id: admin.id, name: admin.displayName },
+    })
     sendJson(res, 200, { project })
     return
   }
 
   if (url.pathname === '/api/teams' && req.method === 'POST') {
-    await requireAdmin(req)
+    const admin = await requireAdmin(req)
     const body = await readJson(req)
     const team = await createTeam(body)
+    teamsRevision++
+    const [teams, projects] = await Promise.all([getTeams(), getProjects()])
+    broadcastEvent('teams:updated', {
+      teams: teams.map(teamRowToPayload),
+      projects: projects.map(projectRowToPayload),
+      actor: { id: admin.id, name: admin.displayName },
+    })
     sendJson(res, 201, { team })
     return
   }
 
   const teamPatchMatch = url.pathname.match(/^\/api\/teams\/([a-z0-9][a-z0-9-]*)$/)
   if (teamPatchMatch && req.method === 'PATCH') {
-    await requireAdmin(req)
+    const admin = await requireAdmin(req)
     const body = await readJson(req)
     const team = await updateTeam(teamPatchMatch[1], body)
     if (!team) {
       sendJson(res, 404, { error: 'Team not found.' })
       return
     }
+    teamsRevision++
+    const [teams, projects] = await Promise.all([getTeams(), getProjects()])
+    broadcastEvent('teams:updated', {
+      teams: teams.map(teamRowToPayload),
+      projects: projects.map(projectRowToPayload),
+      actor: { id: admin.id, name: admin.displayName },
+    })
     sendJson(res, 200, { team })
     return
   }
@@ -369,6 +444,11 @@ async function handleApi(req, res, url) {
     const user = await requireCurrentUser(req)
     const body = await readJson(req)
     const checkin = await createCheckin(body, user)
+    broadcastEvent('checkin:changed', {
+      team: checkin.team,
+      subjectUserId: checkin.subjectUserId,
+      actor: { id: user.id, name: user.displayName },
+    })
     sendJson(res, 201, { checkin })
     return
   }
@@ -382,6 +462,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'Check-in not found.' })
       return
     }
+    broadcastEvent('checkin:changed', {
+      team: checkin.team,
+      subjectUserId: checkin.subjectUserId,
+      actor: { id: user.id, name: user.displayName },
+    })
     sendJson(res, 200, { checkin })
     return
   }
@@ -393,6 +478,9 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'Check-in not found.' })
       return
     }
+    broadcastEvent('checkin:changed', {
+      actor: { id: user.id, name: user.displayName },
+    })
     sendJson(res, 200, { ok: true })
     return
   }
@@ -406,6 +494,10 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'Goal not found.' })
       return
     }
+    broadcastEvent('checkin_goal:changed', {
+      goalId: checkinGoalMatch[1],
+      actor: { id: user.id, name: user.displayName },
+    })
     sendJson(res, 200, { goal })
     return
   }
@@ -417,6 +509,10 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'Goal not found.' })
       return
     }
+    broadcastEvent('checkin_goal:changed', {
+      goalId: checkinGoalMatch[1],
+      actor: { id: user.id, name: user.displayName },
+    })
     sendJson(res, 200, { ok: true })
     return
   }
@@ -429,6 +525,8 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'Question not found.' })
       return
     }
+    questionsRevision++
+    broadcastEvent('question:deleted', { questionId: questionMatch[1], actor: { id: user.id, name: user.displayName } })
     sendJson(res, 200, { ok: true })
     return
   }
@@ -441,6 +539,8 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'Answer not found.' })
       return
     }
+    questionsRevision++
+    broadcastEvent('answer:deleted', { answerId: answerDeleteMatch[1], actor: { id: user.id, name: user.displayName } })
     sendJson(res, 200, { ok: true })
     return
   }
@@ -453,6 +553,9 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: 'User not found.' })
       return
     }
+    rosterCache = null
+    rosterRevision++
+    broadcastEvent('roster:user_removed', { userId: userDeleteMatch[1], actor: { id: admin.id, name: admin.displayName } })
     sendJson(res, 200, { ok: true })
     return
   }
@@ -1298,14 +1401,46 @@ async function updateCard(id, body, user) {
   ]
 
   await sql.transaction(queries)
+
+  for (const [eventType, field, oldValue, newValue] of events) {
+    broadcastEvent('card:event', {
+      id: randomToken(),
+      cardId: id,
+      eventType,
+      field,
+      oldValue: String(oldValue ?? ''),
+      newValue: String(newValue ?? ''),
+      createdAt: new Date().toISOString(),
+      actorName: user.displayName,
+      actorAvatarUrl: user.avatarUrl,
+    })
+  }
+
   return getCardRow(id)
 }
 
 async function recordCardEvent(cardId, actorUserId, eventType, field, oldValue, newValue) {
-  await sql`
+  const [created] = await sql`
     insert into cardboard_card_events (card_id, classroom_id, actor_user_id, event_type, field, old_value, new_value)
     values (${cardId}, ${activeClassroom.id}, ${actorUserId}, ${eventType}, ${field}, ${oldValue}, ${newValue})
+    returning *
   `
+  try {
+    const [actor] = await sql`select display_name, avatar_url from cardboard_users where id = ${actorUserId}`
+    broadcastEvent('card:event', {
+      id: created.id,
+      cardId,
+      eventType: created.event_type,
+      field: created.field,
+      oldValue: created.old_value,
+      newValue: created.new_value,
+      createdAt: created.created_at,
+      actorName: actor?.display_name ?? 'Former student',
+      actorAvatarUrl: actor?.avatar_url ?? null,
+    })
+  } catch (err) {
+    console.warn('Failed to broadcast card event:', err)
+  }
 }
 
 async function listCardEvents(cardId) {
@@ -1401,7 +1536,11 @@ async function createCardComment(cardId, body, user) {
   }
 }
 
+let rosterCache = null
+
 async function listRoster() {
+  if (rosterCache) return rosterCache
+
   const [rows, memberRows] = await Promise.all([
     sql`select id, display_name, github_login, is_admin, approval_status from cardboard_users order by display_name asc`,
     sql`select user_id, team_slug, role from cardboard_team_members order by created_at`,
@@ -1409,7 +1548,7 @@ async function listRoster() {
 
   // Pending sign-ups stay out of the roster (and every assignee picker) until
   // an admin approves them from the Review students tab.
-  return rows
+  rosterCache = rows
     .filter((row) => isAdminLogin(row.github_login) || row.is_admin || (row.approval_status ?? 'approved') === 'approved')
     .map((row) => ({
       id: row.id,
@@ -2056,8 +2195,137 @@ async function readJson(req) {
   }
 }
 
+let cardsRevision = 1
+let rosterRevision = 1
+let teamsRevision = 1
+let questionsRevision = 1
+
+const sseClients = new Map()
+const onlineUsers = new Map()
+
+function trackUserConnect(user) {
+  const existing = onlineUsers.get(user.id)
+  if (existing) {
+    existing.count += 1
+  } else {
+    onlineUsers.set(user.id, {
+      id: user.id,
+      githubLogin: user.githubLogin,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      count: 1,
+    })
+    broadcastPresence()
+  }
+}
+
+function trackUserDisconnect(user) {
+  const existing = onlineUsers.get(user.id)
+  if (existing) {
+    existing.count -= 1
+    if (existing.count <= 0) {
+      onlineUsers.delete(user.id)
+      broadcastPresence()
+    }
+  }
+}
+
+function getOnlineUsersList() {
+  return Array.from(onlineUsers.values()).map((u) => ({
+    id: u.id,
+    githubLogin: u.githubLogin,
+    displayName: u.displayName,
+    avatarUrl: u.avatarUrl,
+  }))
+}
+
+function broadcastPresence() {
+  broadcastEvent('presence:update', { onlineUsers: getOnlineUsersList() })
+}
+
+function broadcastEvent(eventName, payload, filterFn = null) {
+  const raw = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`
+  for (const [clientId, client] of sseClients.entries()) {
+    if (filterFn && !filterFn(client)) continue
+    try {
+      client.res.write(raw)
+    } catch (err) {
+      console.warn(`Failed to write SSE event to client ${clientId}:`, err)
+    }
+  }
+}
+
+async function handleEventsStream(req, res) {
+  const user = await getCurrentUser(req)
+  if (!user) {
+    sendJson(res, 401, { error: 'Sign in required.' })
+    return
+  }
+
+  req.socket.setTimeout(0)
+  req.socket.setNoDelay(true)
+  req.socket.setKeepAlive(true)
+
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-transform',
+    'connection': 'keep-alive',
+    'x-accel-buffering': 'no',
+  })
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders()
+  }
+
+  const clientId = randomToken()
+  const client = { id: clientId, res, user, connectedAt: Date.now() }
+  sseClients.set(clientId, client)
+
+  trackUserConnect(user)
+
+  try {
+    res.write(`event: connected\ndata: ${JSON.stringify({ userId: user.id })}\n\n`)
+    res.write(`event: presence:update\ndata: ${JSON.stringify({ onlineUsers: getOnlineUsersList() })}\n\n`)
+  } catch { /* ignore */ }
+
+  const heartbeatTimer = setInterval(() => {
+    try {
+      res.write(': keepalive\n\n')
+    } catch {
+      clearInterval(heartbeatTimer)
+    }
+  }, 25000)
+
+  req.on('close', () => {
+    clearInterval(heartbeatTimer)
+    sseClients.delete(clientId)
+    trackUserDisconnect(user)
+  })
+}
+
+function handleETag(req, res, tag) {
+  const etag = `"${tag}"`
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, {
+      etag,
+      'cache-control': 'no-cache',
+    })
+    res.end()
+    return true
+  }
+  return false
+}
+
+function sendJsonWithETag(res, status, payload, tag) {
+  const etag = `"${tag}"`
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-cache',
+    etag,
+  })
+  res.end(JSON.stringify(payload))
+}
+
 function sendJson(res, status, payload) {
-  // API responses must never be cached; a stale board is worse than a refetch.
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -2135,12 +2403,18 @@ function serveStatic(pathname, res) {
   const type = mimeType(extname(safePath))
 
   // Vite content-hashes everything under /assets, so those can cache forever;
-  // index.html (and the svgs) must revalidate on every load or students keep
-  // seeing the previous deploy until they hard-refresh.
+  // images/svgs can cache with stale-while-revalidate;
+  // index.html must revalidate on every load or students keep seeing the previous deploy.
   const isHashedAsset = safePath.startsWith(join(dist, 'assets'))
+  const isPublicStatic = safePath.endsWith('.svg') || safePath.endsWith('.ico') || safePath.endsWith('.png') || safePath.endsWith('.woff2')
+  const cacheControl = isHashedAsset
+    ? 'public, max-age=31536000, immutable'
+    : isPublicStatic
+      ? 'public, max-age=86400, stale-while-revalidate=604800'
+      : 'no-cache'
   res.writeHead(200, {
     'content-type': type,
-    'cache-control': isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache',
+    'cache-control': cacheControl,
   })
   createReadStream(safePath).pipe(res)
 }

@@ -10,6 +10,11 @@ import {
   updateDefaultName, updateProject, updateTeam, updateUserMemberships,
 } from './utils/api'
 import type { AuthUser } from './utils/api'
+import {
+  clearDraft, loadCachedBoardData, loadDraft, loadPreference, saveCachedBoardData, saveDraft, savePreference,
+} from './utils/cache'
+import { realtimeClient } from './utils/realtime'
+import type { ConnectionStatus, RealtimePresenceUser } from './utils/realtime'
 import type {
   CardComment, CardEvent, CardStatus, Checkin, GoalStatus, MemberRole, Membership, PendingUser, Priority, Project,
   QnaQuestion, RosterUser, TabId, Task, Team, TeamActivityEvent, TeamId,
@@ -55,7 +60,9 @@ interface TaskDraft {
   priority: Priority
 }
 
-const TODAY = new Date()
+function getToday(): Date {
+  return new Date()
+}
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
@@ -121,7 +128,7 @@ function formatRelativeTime(iso: string): string {
 }
 
 function offsetDate(days: number) {
-  const d = new Date(TODAY)
+  const d = getToday()
   d.setDate(d.getDate() + days)
   return d.toISOString().slice(0, 10)
 }
@@ -138,7 +145,7 @@ function getDueState(date: string, done = false): { label: string; tone: 'calm' 
   if (done) return { label: date ? formatShortDate(date) : 'No due date', tone: 'calm' }
   if (!date) return { label: 'No due date', tone: 'calm' }
   const due = new Date(`${date}T12:00:00`)
-  const d = Math.ceil((due.getTime() - TODAY.getTime()) / 86400000)
+  const d = Math.ceil((due.getTime() - getToday().getTime()) / 86400000)
   if (d < 0)  return { label: `${Math.abs(d)}d late`, tone: 'late' }
   if (d <= 2) return { label: d === 0 ? 'Due today' : `${d}d left`, tone: 'soon' }
   return { label: formatShortDate(date), tone: 'calm' }
@@ -158,7 +165,7 @@ const FINISHED_AFTER_DAYS = 7
 // column for the collapsed Finished-tasks shelf under the board.
 function isFinishedTask(task: Task): boolean {
   if (task.cardStatus !== 'done' || !task.doneAt) return false
-  return TODAY.getTime() - new Date(task.doneAt).getTime() >= FINISHED_AFTER_DAYS * 86400000
+  return getToday().getTime() - new Date(task.doneAt).getTime() >= FINISHED_AFTER_DAYS * 86400000
 }
 
 // ── Wordmark ──────────────────────────────────────────────────────────────────
@@ -587,7 +594,17 @@ function CardActivity({ cardId, refreshToken }: { cardId: Task['id']; refreshTok
       }
     }
     void load()
-    return () => { isActive = false }
+
+    const unsub = realtimeClient.subscribe('card:event', (ev) => {
+      if (String(ev.cardId) === String(cardId)) {
+        setEvents((cur) => cur.some((e) => e.id === ev.id) ? cur : [...cur, ev])
+      }
+    })
+
+    return () => {
+      isActive = false
+      unsub()
+    }
   }, [cardId, refreshToken])
 
   if (isLoading) return <SkeletonLines rows={3} />
@@ -637,7 +654,23 @@ function CardComments({ cardId, currentUserId, canModerate }: {
       }
     }
     void load()
-    return () => { isActive = false }
+
+    const unsubCreated = realtimeClient.subscribe('comment:created', (data) => {
+      if (String(data.cardId) === String(cardId)) {
+        setComments((cur) => cur.some((c) => c.id === data.comment.id) ? cur : [...cur, data.comment])
+      }
+    })
+    const unsubDeleted = realtimeClient.subscribe('comment:deleted', (data) => {
+      if (String(data.cardId) === String(cardId)) {
+        setComments((cur) => cur.filter((c) => c.id !== data.commentId))
+      }
+    })
+
+    return () => {
+      isActive = false
+      unsubCreated()
+      unsubDeleted()
+    }
   }, [cardId])
 
   async function submitComment() {
@@ -893,9 +926,36 @@ function CardDetailModal({
   const [title, setTitle] = useState(task.title)
   const [description, setDescription] = useState(task.description)
   const [refreshToken, setRefreshToken] = useState(0)
+  const [remoteEditNotice, setRemoteEditNotice] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const dueDateRef = useRef<HTMLInputElement>(null)
+  const prevTaskRef = useRef(task)
+
+  useEffect(() => {
+    const prev = prevTaskRef.current
+    if (prev.id === task.id) {
+      if (task.title !== prev.title) {
+        if (title === prev.title) {
+          setTitle(task.title)
+        } else {
+          setRemoteEditNotice(true)
+        }
+      }
+      if (task.description !== prev.description) {
+        if (description === prev.description) {
+          setDescription(task.description)
+        } else {
+          setRemoteEditNotice(true)
+        }
+      }
+    } else {
+      setTitle(task.title)
+      setDescription(task.description)
+      setRemoteEditNotice(false)
+    }
+    prevTaskRef.current = task
+  }, [task, title, description])
 
   // Opened via the "extend the due date?" prompt — land the user in the picker.
   useEffect(() => {
@@ -933,7 +993,10 @@ function CardDetailModal({
   return (
     <ModalShell onClose={onClose} wide>
       <header className="modal-head">
-        <span className="modal-eyebrow">{teamNames[task.team] ?? task.team} · {statusLabel(task.cardStatus)}</span>
+        <div className="modal-head-info">
+          <span className="modal-eyebrow">{teamNames[task.team] ?? task.team} · {statusLabel(task.cardStatus)}</span>
+          {remoteEditNotice && <span className="remote-notice">Updated remotely</span>}
+        </div>
         <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
       </header>
       <div className="card-modal-grid">
@@ -1032,19 +1095,25 @@ function NewCardModal({
   onCreate: (draft: TaskDraft) => Promise<boolean>
   onClose: () => void
 }) {
-  const [draft, setDraft] = useState<TaskDraft>({
-    title: '',
-    description: '',
-    dueDate: offsetDate(4),
-    presetTags: [],
-    team: defaultTeam,
-    assigneeUserIds: defaultAssigneeId ? [defaultAssigneeId] : [],
-    priority: 'medium',
+  const [draft, setDraft] = useState<TaskDraft>(() => {
+    return loadDraft<TaskDraft>('new_card', {
+      title: '',
+      description: '',
+      dueDate: offsetDate(4),
+      presetTags: [],
+      team: defaultTeam,
+      assigneeUserIds: defaultAssigneeId ? [defaultAssigneeId] : [],
+      priority: 'medium',
+    })
   })
   const [isSaving, setIsSaving] = useState(false)
 
   function update<K extends keyof TaskDraft>(field: K, value: TaskDraft[K]) {
-    setDraft((cur) => ({ ...cur, [field]: value }))
+    setDraft((cur) => {
+      const next = { ...cur, [field]: value }
+      saveDraft('new_card', next)
+      return next
+    })
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -1053,7 +1122,10 @@ function NewCardModal({
     setIsSaving(true)
     const ok = await onCreate(draft)
     setIsSaving(false)
-    if (ok) onClose()
+    if (ok) {
+      clearDraft('new_card')
+      onClose()
+    }
   }
 
   return (
@@ -1422,7 +1494,19 @@ function Dashboard({
       }
     }
     void load()
-    return () => { isActive = false }
+
+    const unsubEvent = realtimeClient.subscribe('card:event', () => {
+      if (isActive) void load()
+    })
+    const unsubCard = realtimeClient.subscribe('card:updated', () => {
+      if (isActive) void load()
+    })
+
+    return () => {
+      isActive = false
+      unsubEvent()
+      unsubCard()
+    }
   }, [team])
 
   // All four tiles count open cards only — a card that's Done can't be
@@ -1919,6 +2003,15 @@ function PendingApprovalScreen({
   onLogout: () => void
 }) {
   useEffect(() => {
+    realtimeClient.connect()
+    const unsub = realtimeClient.subscribe('admin:signup_resolved', (data) => {
+      if (data.userId === user.id) {
+        fetchMe()
+          .then((res) => onStatusChange(res.user))
+          .catch(() => {})
+      }
+    })
+
     const id = window.setInterval(() => {
       fetchMe()
         .then((data) => {
@@ -1926,9 +2019,12 @@ function PendingApprovalScreen({
         })
         .catch(() => { /* still waiting */ })
     }, 8000)
-    return () => window.clearInterval(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+
+    return () => {
+      window.clearInterval(id)
+      unsub()
+    }
+  }, [user.id, onStatusChange])
 
   return (
     <div className="signin-wall">
@@ -2386,20 +2482,21 @@ function AdminPanel({
 // ── App ───────────────────────────────────────────────────────────────────────
 
 function App() {
-  const [tasks, setTasks] = useState<Task[]>([])
-  const [roster, setRoster] = useState<RosterUser[]>([])
+  const cached = loadCachedBoardData()
+  const [tasks, setTasks] = useState<Task[]>(() => cached?.tasks ?? [])
+  const [roster, setRoster] = useState<RosterUser[]>(() => cached?.roster ?? [])
   const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([])
-  const [teams, setTeams] = useState<Team[]>([])
-  const [projects, setProjects] = useState<Project[]>([])
-  const [activeTab, setActiveTab] = useState<TabId>('')
-  const [qnaItems, setQnaItems] = useState<QnaQuestion[]>([])
-  const [isLoading, setIsLoading] = useState(true)
+  const [teams, setTeams] = useState<Team[]>(() => cached?.teams ?? [])
+  const [projects, setProjects] = useState<Project[]>(() => cached?.projects ?? [])
+  const [activeTab, setActiveTab] = useState<TabId>(() => loadPreference('active_tab', ''))
+  const [qnaItems, setQnaItems] = useState<QnaQuestion[]>(() => cached?.qnaItems ?? [])
+  const [isLoading, setIsLoading] = useState(() => cached === null)
   const [error, setError] = useState('')
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [githubConfigured, setGithubConfigured] = useState(true)
   const [authChecked, setAuthChecked] = useState(false)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
-  const [myTasksOnly, setMyTasksOnly] = useState(false)
+  const [myTasksOnly, setMyTasksOnly] = useState(() => loadPreference('my_tasks', false))
   const [dashboardTeam, setDashboardTeam] = useState<TeamId>('')
   const [checkinTeam, setCheckinTeam] = useState<TeamId>('')
   const [notesTeam, setNotesTeam] = useState<TeamId>('')
@@ -2409,11 +2506,40 @@ function App() {
   const [undoneConfirm, setUndoneConfirm] = useState<{ taskId: Task['id']; toStatus: CardStatus } | null>(null)
   const [dueDateFocusId, setDueDateFocusId] = useState<Task['id'] | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected')
+  const [onlineUsers, setOnlineUsers] = useState<RealtimePresenceUser[]>([])
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([])
+
+  function addToast(message: string) {
+    const id = Math.random().toString(36).slice(2)
+    setToasts((cur) => [...cur.slice(-3), { id, message }])
+    setTimeout(() => {
+      setToasts((cur) => cur.filter((t) => t.id !== id))
+    }, 3500)
+  }
+
+  useEffect(() => {
+    return realtimeClient.onStatusChange(setConnectionStatus)
+  }, [])
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     try { localStorage.setItem('cardboard-theme', theme) } catch { /* ignore */ }
   }, [theme])
+
+  useEffect(() => {
+    if (activeTab) savePreference('active_tab', activeTab)
+  }, [activeTab])
+
+  useEffect(() => {
+    savePreference('my_tasks', myTasksOnly)
+  }, [myTasksOnly])
+
+  useEffect(() => {
+    if (tasks.length > 0 || teams.length > 0) {
+      saveCachedBoardData({ tasks, qnaItems, roster, teams, projects })
+    }
+  }, [tasks, qnaItems, roster, teams, projects])
 
   useEffect(() => {
     let isActive = true
@@ -2439,6 +2565,108 @@ function App() {
     return () => { isActive = false }
   }, [])
 
+  // Real-time synchronization
+  useEffect(() => {
+    if (!authUser || authUser.approvalStatus !== 'approved') return
+
+    realtimeClient.connect()
+
+    const unsubs = [
+      realtimeClient.subscribe('presence:update', (data) => {
+        setOnlineUsers(data.onlineUsers)
+      }),
+      realtimeClient.subscribe('card:created', (data) => {
+        setTasks((cur) => (cur.some((t) => t.id === data.card.id) ? cur : [...cur, data.card]))
+        if (data.actor && data.actor.id !== authUser.id) {
+          addToast(`${data.actor.name} created card “${data.card.title}”`)
+        }
+      }),
+      realtimeClient.subscribe('card:updated', (data) => {
+        setTasks((cur) => cur.map((t) => (t.id === data.card.id ? data.card : t)))
+        if (data.actor && data.actor.id !== authUser.id) {
+          addToast(`${data.actor.name} updated card “${data.card.title}”`)
+        }
+      }),
+      realtimeClient.subscribe('card:deleted', (data) => {
+        setTasks((cur) => cur.filter((t) => t.id !== data.id))
+        setSelectedCardId((cur) => (cur === data.id ? null : cur))
+        if (data.actor && data.actor.id !== authUser.id) {
+          addToast(`${data.actor.name} deleted a card`)
+        }
+      }),
+      realtimeClient.subscribe('comment:created', (data) => {
+        if (data.actor && data.actor.id !== authUser.id) {
+          const actorName = data.actor.name
+          setTasks((cur) => {
+            const target = cur.find((t) => t.id === data.cardId)
+            if (target) addToast(`${actorName} commented on “${target.title}”`)
+            return cur
+          })
+        }
+      }),
+      realtimeClient.subscribe('question:created', (data) => {
+        setQnaItems((cur) => (cur.some((q) => q.id === data.question.id) ? cur : [data.question, ...cur]))
+        if (data.actor && data.actor.id !== authUser.id) {
+          addToast(`${data.actor.name} asked: “${data.question.question}”`)
+        }
+      }),
+      realtimeClient.subscribe('question:deleted', (data) => {
+        setQnaItems((cur) => cur.filter((q) => q.id !== data.questionId))
+      }),
+      realtimeClient.subscribe('answer:created', (data) => {
+        setQnaItems((cur) => cur.map((q) => (
+          q.id === data.questionId
+            ? { ...q, answers: q.answers.some((a) => a.id === data.answer.id) ? q.answers : [...q.answers, data.answer] }
+            : q
+        )))
+        if (data.actor && data.actor.id !== authUser.id) {
+          addToast(`${data.actor.name} answered a question`)
+        }
+      }),
+      realtimeClient.subscribe('answer:deleted', (data) => {
+        setQnaItems((cur) => cur.map((q) => (
+          q.id === data.questionId
+            ? { ...q, answers: q.answers.filter((a) => a.id !== data.answerId) }
+            : q
+        )))
+      }),
+      realtimeClient.subscribe('teams:updated', (data) => {
+        setTeams(data.teams)
+        setProjects(data.projects)
+      }),
+      realtimeClient.subscribe('roster:updated', (data) => {
+        setRoster((cur) => cur.map((u) => (u.id === data.user.id ? data.user : u)))
+        if (data.user.id === authUser.id) {
+          setAuthUser((cur) => (cur ? {
+            ...cur,
+            isAdmin: data.user.isAdmin,
+            memberships: data.user.memberships,
+            displayName: data.user.displayName,
+          } : cur))
+        }
+      }),
+      realtimeClient.subscribe('roster:user_removed', (data) => {
+        setRoster((cur) => cur.filter((u) => u.id !== data.userId))
+        if (data.userId === authUser.id) {
+          void handleLogout()
+        }
+      }),
+      realtimeClient.subscribe('admin:signup_resolved', (data) => {
+        if (data.userId === authUser.id && data.approved) {
+          setAuthUser((cur) => (cur ? { ...cur, approvalStatus: 'approved' } : cur))
+        }
+        if (authUser.isAdmin) {
+          fetchPendingUsers().then(setPendingUsers).catch(() => {})
+          fetchRoster().then(setRoster).catch(() => {})
+        }
+      }),
+    ]
+
+    return () => {
+      for (const unsub of unsubs) unsub()
+    }
+  }, [authUser])
+
   useEffect(() => {
     // No data requests while the account waits at the approval gate — the
     // server would 403 them all anyway.
@@ -2447,7 +2675,7 @@ function App() {
     let isActive = true
     async function load() {
       try {
-        setIsLoading(true); setError('')
+        setError('')
         const [cards, questions, users, teamData, pending] = await Promise.all([
           fetchCards(), fetchQuestions(), fetchRoster(), fetchTeams(),
           isAdmin ? fetchPendingUsers() : Promise.resolve([]),
@@ -2459,11 +2687,25 @@ function App() {
           setPendingUsers(pending)
           setTeams(teamData.teams)
           setProjects(teamData.projects)
+          saveCachedBoardData({
+            tasks: cards,
+            qnaItems: questions,
+            roster: users,
+            teams: teamData.teams,
+            projects: teamData.projects,
+          })
           const archivedProjects = new Set(teamData.projects.filter((p) => p.archived).map((p) => p.slug))
           const firstVisible = teamData.teams.find(
             (t) => !t.archived && !(t.projectSlug && archivedProjects.has(t.projectSlug)),
           ) ?? teamData.teams[0]
-          if (firstVisible) setActiveTab((cur) => (cur ? cur : firstVisible.slug))
+          if (firstVisible) {
+            setActiveTab((cur) => {
+              if (cur && (teamData.teams.some((t) => t.slug === cur) || ['qna', 'checkins', 'my-checkins', 'dashboard', 'notes', 'admin', 'review', 'profile'].includes(cur))) {
+                return cur
+              }
+              return firstVisible.slug
+            })
+          }
         }
       } catch (err) {
         if (isActive) setError(err instanceof Error ? err.message : 'Could not load cards.')
@@ -2858,6 +3100,38 @@ function App() {
             <h1 className="view-title">{viewTitle}</h1>
           </div>
           <div className="view-actions">
+            <div className="view-header-status">
+              <div
+                className={`live-badge ${connectionStatus}`}
+                title={
+                  connectionStatus === 'connected'
+                    ? 'Real-time sync active: live updates from all teammates'
+                    : connectionStatus === 'connecting'
+                    ? 'Connecting to real-time sync…'
+                    : 'Offline: cached data active'
+                }
+              >
+                <span className="live-badge-dot" />
+                <span className="live-badge-label">
+                  {connectionStatus === 'connected' ? 'Live' : connectionStatus === 'connecting' ? 'Connecting…' : 'Offline'}
+                </span>
+              </div>
+              {onlineUsers.length > 0 && (
+                <div
+                  className="presence-pile"
+                  title={`Active now (${onlineUsers.length}): ${onlineUsers.map((u) => u.displayName).join(', ')}`}
+                >
+                  {onlineUsers.slice(0, 4).map((u) => (
+                    u.avatarUrl
+                      ? <img key={u.id} src={u.avatarUrl} alt={u.displayName} className="presence-avatar avatar-img" />
+                      : <span key={u.id} className="presence-avatar">{initialOf(u.displayName)}</span>
+                  ))}
+                  {onlineUsers.length > 4 && (
+                    <span className="presence-avatar presence-more">+{onlineUsers.length - 4}</span>
+                  )}
+                </div>
+              )}
+            </div>
             {(() => {
               // Team switcher for the PM views. Dashboard and Check-ins let an
               // admin pick any visible team; PM Notes is strictly the teams the
@@ -3037,6 +3311,15 @@ function App() {
           onClose={() => setNewCardOpen(false)}
         />
       )}
+
+      <div className="toast-container" aria-live="polite">
+        {toasts.map((toast) => (
+          <div key={toast.id} className="live-toast">
+            <span className="toast-dot" />
+            <span className="toast-text">{toast.message}</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
